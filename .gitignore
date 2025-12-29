@@ -1,0 +1,18 @@
+.env
+*.env
+
+
+venv/
+.venv/
+
+
+__pycache__/
+*.pyc
+
+
+.vscode/  # VS Code sozlamalari
+.idea/    # PyCharm/IntelliJ sozlamalari
+
+
+*.log      # Barcha log fayllari
+*.sqlite3  # Agar loyiha SQLite ishlatgan bo'lsa

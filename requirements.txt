@@ -1,3 +1,5 @@
 aiogram
 httpx
 python-dotenv
+aiohttp
+requests

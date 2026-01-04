@@ -23,7 +23,7 @@ from aiogram.types import (
 load_dotenv()
 
 # --- KONFIGURATSIYA ---
-BOT_TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = os.getenv("BOT_TOKEN_ADMIN")
 BACKEND_URL = os.getenv("BACKEND_URL")
 
 logging.basicConfig(level=logging.INFO)

@@ -1,3 +1,7 @@
  python -m venv venv
 
 source venv/Scripts/activate
+
+user_bot.py
+Kuryer.py
+main.py

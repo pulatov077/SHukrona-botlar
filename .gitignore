@@ -16,3 +16,4 @@ __pycache__/
 
 *.log      # Barcha log fayllari
 *.sqlite3  # Agar loyiha SQLite ishlatgan bo'lsa
+run.txt    # Agar mavjud bo'lsa, ishga tushirish fayli

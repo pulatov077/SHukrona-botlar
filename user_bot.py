@@ -18,6 +18,7 @@ from aiogram.types import (
     InlineKeyboardButton,
     CallbackQuery
 )
+from aiogram.exceptions import TelegramBadRequest
 
 # .env yuklash
 load_dotenv()
@@ -26,7 +27,8 @@ load_dotenv()
 USER_BOT_TOKEN = os.getenv("USER_BOT_TOKEN")
 BACKEND_URL = os.getenv("BACKEND_URL")
 
-logging.basicConfig(level=logging.INFO)
+# Loglarni chiroyli formatda chiqarish
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 bot = Bot(token=USER_BOT_TOKEN)
@@ -47,871 +49,645 @@ class OrderStates(StatesGroup):
     selecting_product = State()
     entering_quantity = State()
     confirming_basket = State()
+    choosing_address_type = State()
     entering_delivery_time = State()
 
-# --- BACKEND API BILAN ISHLASH ---
+class RateStates(StatesGroup):
+    selecting_stars = State()
+    entering_comment = State()
 
+# --- API ---
 async def get_user_me(tg_id: str | int):
-    """Foydalanuvchi ma'lumotlarini olish"""
     url = f"{BACKEND_URL}/users/me/{tg_id}/"
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(url, timeout=10.0)
-            if res.status_code == 200:
-                return res.json()
-            logger.warning(f"User not found: {tg_id}, status: {res.status_code}")
-            return None
-        except httpx.TimeoutException:
-            logger.error(f"Timeout getting user: {tg_id}")
-            return None
+            return res.json() if res.status_code == 200 else None
         except Exception as e:
-            logger.error(f"Error getting user {tg_id}: {e}")
+            logger.error(f"API Error (get_user): {e}")
             return None
 
 async def register_user_api(data: dict):
-    """Yangi foydalanuvchini ro'yxatdan o'tkazish"""
     url = f"{BACKEND_URL}/users/"
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(url, json=data, timeout=10.0)
-            if res.status_code not in [200, 201]:
-                logger.error(f"Registration failed: {res.status_code}, {res.text}")
-            return res
+            return await client.post(url, json=data, timeout=10.0)
         except Exception as e:
-            logger.error(f"Registration error: {e}")
+            logger.error(f"API Error (register): {e}")
             return None
 
 async def update_user_api(tg_id: str | int, data: dict):
-    """Foydalanuvchi ma'lumotlarini yangilash"""
     url = f"{BACKEND_URL}/users/me/{tg_id}/"
     headers = {"Content-Type": "application/json"}
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.put(url, json=data, headers=headers, timeout=10.0)
-            if res.status_code not in [200, 204]:
-                logger.error(f"Update failed: {res.status_code}, {res.text}")
-            return res
+            return await client.put(url, json=data, headers=headers, timeout=10.0)
         except Exception as e:
-            logger.error(f"Update error: {e}")
+            logger.error(f"API Error (update): {e}")
             return None
 
 async def get_products():
-    """Barcha mahsulotlarni olish"""
     url = f"{BACKEND_URL}/products/"
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(url, timeout=10.0)
-            if res.status_code == 200:
-                return res.json()
-            logger.error(f"Failed to get products: {res.status_code}")
-            return []
+            return res.json() if res.status_code == 200 else []
         except Exception as e:
-            logger.error(f"Products error: {e}")
+            logger.error(f"API Error (products): {e}")
             return []
 
 async def create_order_api(payload: dict):
-    """Yangi buyurtma yaratish"""
     url = f"{BACKEND_URL}/orders/"
     async with httpx.AsyncClient() as client:
         try:
-            res = await client.post(url, json=payload, timeout=10.0)
-            if res.status_code not in [200, 201]:
-                logger.error(f"Order creation failed: {res.status_code}, {res.text}")
-            return res
+            logger.info(f"📤 Order Payload: {payload}")
+            return await client.post(url, json=payload, timeout=10.0)
         except Exception as e:
-            logger.error(f"Order creation error: {e}")
+            logger.error(f"API Error (create_order): {e}")
             return None
 
 async def get_my_orders_api(tg_id: str | int, limit: int = 5, offset: int = 0):
-    """Foydalanuvchi buyurtmalarini olish"""
     url = f"{BACKEND_URL}/orders/user/"
     params = {"telegram_id": str(tg_id), "limit": limit, "offset": offset}
     async with httpx.AsyncClient() as client:
         try:
             res = await client.get(url, params=params, timeout=10.0)
-            if res.status_code == 200:
-                return res.json()
-            logger.error(f"Failed to get orders: {res.status_code}")
-            return []
+            return res.json() if res.status_code == 200 else []
         except Exception as e:
-            logger.error(f"Orders error: {e}")
+            logger.error(f"API Error (my_orders): {e}")
             return []
 
-# --- KEYBOARDS ---
+async def rate_order_api(order_id: int, rating: int, comment: str):
+    url = f"{BACKEND_URL}/orders/{order_id}/rate/"
+    payload = {"rating": rating, "comment": comment}
+    async with httpx.AsyncClient() as client:
+        try:
+            return await client.post(url, json=payload, timeout=10.0)
+        except Exception as e:
+            logger.error(f"API Error (rate): {e}")
+            return None
 
+# --- YORDAMCHI FUNKSIYALAR ---
+def format_price(price):
+    try: return f"{int(price):,}".replace(",", " ")
+    except: return str(price)
+
+def location_to_str(location: types.Location) -> str:
+    return f"https://www.google.com/maps?q={location.latitude},{location.longitude}"
+
+def format_date(date_str):
+    if not date_str: return "-"
+    try: return datetime.fromisoformat(date_str.replace("Z", "+00:00")).strftime("%d.%m.%Y %H:%M")
+    except: return date_str
+
+# --- KEYBOARDS (UX/UI yaxshilangan) ---
 def get_main_menu():
-    """Asosiy menyu tugmalari"""
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🛍 Yangi buyurtma")],
             [KeyboardButton(text="📦 Mening buyurtmalarim")],
             [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="⚙️ Sozlamalar")]
-        ],
-        resize_keyboard=True
-    )
-
-def get_phone_keyboard():
-    """Telefon raqamini yuborish tugmasi"""
-    return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="📱 Telefon raqamni yuborish", request_contact=True)]],
-        resize_keyboard=True, 
-        one_time_keyboard=True
+        ], resize_keyboard=True
     )
 
 def get_cancel_keyboard():
-    """Bekor qilish tugmasi"""
+    return ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="❌ Bekor qilish")]], resize_keyboard=True)
+
+def get_phone_keyboard():
     return ReplyKeyboardMarkup(
-        keyboard=[[KeyboardButton(text="❌ Bekor qilish")]],
-        resize_keyboard=True
+        keyboard=[
+            [KeyboardButton(text="📱 Raqamni yuborish", request_contact=True)],
+            [KeyboardButton(text="❌ Bekor qilish")]
+        ], resize_keyboard=True, one_time_keyboard=True
     )
 
-def format_date(date_str):
-    """Sanani formatlash"""
-    if not date_str:
-        return "-"
-    try:
-        dt = datetime.fromisoformat(date_str.replace("Z", "+00:00"))
-        return dt.strftime("%d.%m.%Y %H:%M")
-    except Exception as e:
-        logger.error(f"Date formatting error: {e}")
-        return date_str
+def get_location_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="📍 Lokatsiyani yuborish", request_location=True)],
+            [KeyboardButton(text="❌ Bekor qilish")]
+        ], resize_keyboard=True, one_time_keyboard=True
+    )
 
-def format_price(price):
-    """Narxni formatlash"""
-    try:
-        return f"{int(price):,}".replace(",", " ")
-    except:
-        return str(price)
+def get_rating_keyboard(order_id):
+    return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]])
 
-# --- CANCEL HANDLER ---
-
+# --- GLOBAL BEKOR QILISH ---
 @dp.message(F.text == "❌ Bekor qilish")
 async def cancel_handler(message: Message, state: FSMContext):
-    """Har qanday jarayonni bekor qilish"""
-    current_state = await state.get_state()
-    if current_state is None:
-        await message.answer("Hech narsa bekor qilinmadi.", reply_markup=get_main_menu())
-        return
-    
     await state.clear()
-    await message.answer("❌ Jarayon bekor qilindi.", reply_markup=get_main_menu())
+    await message.answer("❌ Jarayon bekor qilindi. Asosiy menyudasiz.", reply_markup=get_main_menu())
 
-# --- 1. START VA RO'YXATDAN O'TISH ---
+@dp.callback_query(F.data == "cancel_order")
+async def cancel_order_cb(callback: CallbackQuery, state: FSMContext):
+    await callback.message.delete()
+    await state.clear()
+    await callback.message.answer("❌ Buyurtma bekor qilindi.", reply_markup=get_main_menu())
 
+# --- 1. START & RO'YXATDAN O'TISH ---
 @dp.message(Command("start"))
 async def cmd_start(message: Message, state: FSMContext):
-    """Bot ishga tushganda"""
-    await state.clear()  # Oldingi holatni tozalash
-    
+    await state.clear()
     user = await get_user_me(message.from_user.id)
     if user:
-        await message.answer(
-            f"👋 Xush kelibsiz, {user['name']}!\n\n"
-            f"📱 Bot orqali yangi buyurtma berishingiz, buyurtmalaringizni kuzatishingiz mumkin.",
-            reply_markup=get_main_menu()
-        )
+        await message.answer(f"👋 Assalomu alaykum, <b>{user['name']}</b>!\nXush kelibsiz.", parse_mode="HTML", reply_markup=get_main_menu())
     else:
         await message.answer(
-            "👋 Assalomu alaykum!\n\n"
-            "Botdan foydalanish uchun ro'yxatdan o'ting.\n\n"
-            "✍️ Iltimos, to'liq ismingizni kiriting:",
+            "👋 Assalomu alaykum!\n\nBotimizdan foydalanish uchun, iltimos, ro'yxatdan o'ting.\n\n✍️ <b>Ismingizni kiriting:</b>", 
+            parse_mode="HTML",
             reply_markup=get_cancel_keyboard()
         )
         await state.set_state(RegistrationStates.name)
 
 @dp.message(RegistrationStates.name)
 async def reg_name(message: Message, state: FSMContext):
-    """Ism kiritish"""
-    name = message.text.strip()
-    
-    if len(name) < 3:
-        await message.answer("❌ Ism juda qisqa. Kamida 3 ta harf kiriting:")
+    if len(message.text) < 3:
+        await message.answer("⚠️ Ism juda qisqa. Iltimos, to'liq ismingizni kiriting:")
         return
-    
-    if len(name) > 100:
-        await message.answer("❌ Ism juda uzun. Qisqaroq kiriting:")
-        return
-    
-    await state.update_data(name=name)
+    await state.update_data(name=message.text)
     await message.answer(
-        "📱 Endi telefon raqamingizni yuboring:\n\n"
-        "Raqamni qo'lda yozishingiz yoki pastdagi tugmani bosishingiz mumkin.",
+        "Rahmat! Endi telefon raqamingizni kiriting.\n\nPastdagi tugmani bosishingiz mumkin:", 
         reply_markup=get_phone_keyboard()
     )
     await state.set_state(RegistrationStates.phone)
 
 @dp.message(RegistrationStates.phone, F.contact | F.text)
 async def reg_phone(message: Message, state: FSMContext):
-    """Telefon raqam kiritish"""
-    if message.contact:
-        phone = message.contact.phone_number
-    else:
-        phone = message.text.strip()
-        # Telefon raqam validatsiyasi
-        phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-        if not phone.startswith("+"):
-            if phone.startswith("998"):
-                phone = "+" + phone
-            else:
-                phone = "+998" + phone
-        
-        if len(phone) < 12:
-            await message.answer(
-                "❌ Noto'g'ri telefon raqam formati.\n\n"
-                "Namuna: +998901234567 yoki 901234567",
-                reply_markup=get_phone_keyboard()
-            )
-            return
+    if message.text == "❌ Bekor qilish":
+        await cancel_handler(message, state)
+        return
+
+    phone = message.contact.phone_number if message.contact else message.text
+    phone = phone.replace(" ", "").replace("+", "").replace("-", "")
     
+    if not phone.isdigit() or len(phone) < 9:
+         await message.answer("⚠️ Iltimos, to'g'ri telefon raqam kiriting (masalan: 901234567).")
+         return
+    
+    phone = "+" + phone
     await state.update_data(phone=phone)
     await message.answer(
-        "📍 Yashash manzilingizni kiriting:\n\n"
-        "Masalan: Toshkent shahar, Chilonzor tumani, 12-kvartal",
-        reply_markup=get_cancel_keyboard()
+        "📍 Endi manzilingizni kiriting.\n\nQo'lda yozishingiz yoki <b>Lokatsiya yuborish</b> tugmasini bosishingiz mumkin:", 
+        parse_mode="HTML",
+        reply_markup=get_location_keyboard()
     )
     await state.set_state(RegistrationStates.address)
 
-@dp.message(RegistrationStates.address)
+@dp.message(RegistrationStates.address, F.text | F.location)
 async def reg_address(message: Message, state: FSMContext):
-    """Manzil kiritish va ro'yxatdan o'tishni yakunlash"""
-    address = message.text.strip()
-    
-    if len(address) < 10:
-        await message.answer("❌ Manzil juda qisqa. To'liqroq kiriting:")
+    if message.text == "❌ Bekor qilish":
+        await cancel_handler(message, state)
         return
-    
+
+    address = location_to_str(message.location) if message.location else message.text
     data = await state.get_data()
-    payload = {
-        "name": data['name'],
-        "phone": data['phone'],
-        "address": address,
-        "telegram_id": str(message.from_user.id)
-    }
+    payload = {"name": data['name'], "phone": data['phone'], "address": address, "telegram_id": str(message.from_user.id)}
     
-    await message.answer("⏳ Ro'yxatdan o'tkazilmoqda...", reply_markup=ReplyKeyboardRemove())
-    
+    msg = await message.answer("⏳ Ro'yxatdan o'tilmoqda...", reply_markup=ReplyKeyboardRemove())
     res = await register_user_api(payload)
+    await msg.delete()
+
     if res and res.status_code in [200, 201]:
-        await message.answer(
-            "✅ Ro'yxatdan muvaffaqiyatli o'tdingiz!\n\n"
-            "Endi siz buyurtma berishingiz mumkin.",
-            reply_markup=get_main_menu()
-        )
+        await message.answer("✅ Tabriklaymiz! Siz muvaffaqiyatli ro'yxatdan o'tdingiz.", reply_markup=get_main_menu())
         await state.clear()
     else:
-        error_msg = "❌ Xatolik yuz berdi. Iltimos, qaytadan urinib ko'ring.\n\n"
-        if res:
-            try:
-                error_data = res.json()
-                if isinstance(error_data, dict):
-                    for key, value in error_data.items():
-                        if isinstance(value, list):
-                            error_msg += f"{key}: {', '.join(map(str, value))}\n"
-            except:
-                pass
-        
-        await message.answer(error_msg)
-        await message.answer("Qayta boshlash uchun /start ni bosing.")
-        await state.clear()
+        await message.answer("❌ Tizimda xatolik yuz berdi. Iltimos, /start buyrug'i orqali qayta urinib ko'ring.")
 
-# --- 2. MENING BUYURTMALARIM (PAGINATSIYA BILAN) ---
-
-async def show_my_orders(message_or_query, tg_id: int, offset: int = 0):
-    """Buyurtmalarni ko'rsatish"""
-    limit = 5
-    
-    # Loading animation
-    if isinstance(message_or_query, Message):
-        loading_msg = await message_or_query.answer("⏳ Buyurtmalar yuklanmoqda...")
-    
-    orders = await get_my_orders_api(tg_id, limit, offset)
-    
-    if isinstance(message_or_query, Message):
-        await loading_msg.delete()
-    
-    if not orders and offset == 0:
-        text = "📦 Sizda hali buyurtmalar yo'q.\n\n🛍 Yangi buyurtma berish uchun asosiy menyudan tugmani bosing."
-        if isinstance(message_or_query, Message):
-            await message_or_query.answer(text, reply_markup=get_main_menu())
-        else:
-            await message_or_query.message.answer(text, reply_markup=get_main_menu())
-        return
-    
-    if not orders:
-        text = "📦 Boshqa buyurtmalar yo'q."
-        if isinstance(message_or_query, Message):
-            await message_or_query.answer(text)
-        else:
-            await message_or_query.message.answer(text)
-        return
-
-    # Har bir buyurtmani alohida xabar sifatida yuborish
-    for idx, o in enumerate(orders, start=offset+1):
-        # Status emoji va nomi
-        status_map = {
-            'kutilmoqda': ('⌛', 'Kutilmoqda'),
-            'tayyorlanmoqda': ('👨‍🍳', 'Tayyorlanmoqda'),
-            'yetkazilmoqda': ('🛵', 'Yetkazilmoqda'),
-            'yetkazildi': ('✅', 'Yetkazildi'),
-            'bekor_qilindi': ('❌', 'Bekor qilindi')
-        }
-        status_emoji, status_text = status_map.get(o['status'], ('❓', o['status'].capitalize()))
-        
-        # Mahsulotlar ro'yxati
-        items_text = ""
-        for item in o.get('items', []):
-            bonus = " 🎁" if item.get('is_bonus') else ""
-            items_text += f"   • {item['product_name']}: {item['quantity']} dona{bonus}\n"
-
-        # Asosiy ma'lumot
-        text = (
-            f"🆔 <b>Buyurtma #{o['id']}</b>\n"
-            f"━━━━━━━━━━━━━━━━━━━\n"
-            f"{status_emoji} <b>Status:</b> {status_text}\n"
-            f"📅 <b>Sana:</b> {format_date(o.get('created_at'))}\n"
-            f"💰 <b>Summa:</b> {format_price(o.get('total_amount', 0))} so'm\n\n"
-            f"📦 <b>Mahsulotlar:</b>\n{items_text}"
-        )
-
-        # Kuryer ma'lumoti
-        if o.get('courier_name'):
-            text += f"\n🛵 <b>Kuryer:</b> {o['courier_name']}"
-            if o.get('courier_phone'):
-                text += f" ({o['courier_phone']})"
-            text += "\n"
-        
-        # Yetkazilgan buyurtmalar uchun qo'shimcha ma'lumot
-        if o['status'] == 'yetkazildi':
-            if o.get('delivered_at'):
-                text += f"🏁 <b>Yetkazildi:</b> {format_date(o['delivered_at'])}\n"
-            if o.get('rating'):
-                stars = "⭐" * o['rating']
-                text += f"📊 <b>Reyting:</b> {stars} ({o['rating']}/5)\n"
-            if o.get('rating_comment'):
-                text += f"💬 <b>Izoh:</b> {o['rating_comment']}\n"
-        
-        # Yetkazib berish vaqti
-        if o.get('delivery_time'):
-            text += f"\n🕒 <b>Yetkazish vaqti:</b> {o['delivery_time']}"
-        
-        await bot.send_message(tg_id, text, parse_mode="HTML")
-
-    # Pagination tugmalari
-    nav_btns = []
-    if offset > 0:
-        nav_btns.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"my_orders_{offset-limit}"))
-    if len(orders) == limit:
-        nav_btns.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"my_orders_{offset+limit}"))
-    
-    if nav_btns:
-        kb = InlineKeyboardMarkup(inline_keyboard=[nav_btns])
-        page_info = f"📄 Sahifa {(offset//limit)+1}"
-        await bot.send_message(tg_id, page_info, reply_markup=kb)
-
-@dp.message(F.text == "📦 Mening buyurtmalarim")
-async def my_orders_handler(message: Message):
-    """Buyurtmalarni ko'rish"""
-    await show_my_orders(message, message.from_user.id, 0)
-
-@dp.callback_query(F.data.startswith("my_orders_"))
-async def my_orders_pagination(callback: CallbackQuery):
-    """Buyurtmalar sahifalari"""
-    offset = int(callback.data.split("_")[-1])
-    await callback.message.delete()
-    await show_my_orders(callback, callback.from_user.id, offset)
-    await callback.answer()
-
-# --- 3. PROFIL VA SOZLAMALAR ---
-
+# --- 2. 👤 PROFILIM ---
 @dp.message(F.text == "👤 Profilim")
 async def show_profile(message: Message):
-    """Profil ma'lumotlarini ko'rsatish"""
-    u = await get_user_me(message.from_user.id)
-    if u:
+    user = await get_user_me(message.from_user.id)
+    if user:
         text = (
-            "👤 <b>Sizning profilingiz</b>\n"
-            "━━━━━━━━━━━━━━━━━━━\n"
-            f"👨‍💼 <b>Ism:</b> {u['name']}\n"
-            f"📞 <b>Telefon:</b> {u['phone']}\n"
-            f"📍 <b>Manzil:</b> {u['address']}\n\n"
-            f"💬 Ma'lumotlarni o'zgartirish uchun <b>⚙️ Sozlamalar</b> tugmasini bosing."
+            f"👤 <b>Sizning ma'lumotlaringiz:</b>\n"
+            f"━━━━━━━━━━━━━━━━━━━\n"
+            f"👤 <b>Ism:</b> {user['name']}\n"
+            f"📞 <b>Telefon:</b> {user['phone']}\n"
+            f"📍 <b>Manzil:</b> {user['address']}"
         )
         await message.answer(text, parse_mode="HTML")
     else:
-        await message.answer("❌ Profil topilmadi. Iltimos, qaytadan ro'yxatdan o'ting.\n\n/start")
+        await message.answer("⚠️ Profil topilmadi. Iltimos, qaytadan ro'yxatdan o'ting: /start")
 
+# --- 3. ⚙️ SOZLAMALAR ---
 @dp.message(F.text == "⚙️ Sozlamalar")
-async def settings_menu(message: Message):
-    """Sozlamalar menyusi"""
+async def settings(m: Message):
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ Ismni o'zgartirish", callback_data="edit_name")],
-        [InlineKeyboardButton(text="📱 Telefon raqamni o'zgartirish", callback_data="edit_phone")],
+        [InlineKeyboardButton(text="📱 Telefonni o'zgartirish", callback_data="edit_phone")],
         [InlineKeyboardButton(text="📍 Manzilni o'zgartirish", callback_data="edit_address")],
         [InlineKeyboardButton(text="❌ Yopish", callback_data="close_settings")]
     ])
-    await message.answer(
-        "⚙️ <b>Sozlamalar</b>\n\n"
-        "O'zgartirmoqchi bo'lgan ma'lumotni tanlang:",
-        reply_markup=kb,
-        parse_mode="HTML"
-    )
+    await m.answer("⚙️ <b>Sozlamalar bo'limi</b>\nQaysi ma'lumotni o'zgartirmoqchisiz?", reply_markup=kb, parse_mode="HTML")
 
 @dp.callback_query(F.data == "close_settings")
-async def close_settings(callback: CallbackQuery):
-    """Sozlamalarni yopish"""
-    await callback.message.delete()
-    await callback.answer("✅ Yopildi")
+async def close_s(c: CallbackQuery): await c.message.delete()
 
-@dp.callback_query(F.data.startswith("edit_"))
-async def edit_callback(callback: CallbackQuery, state: FSMContext):
-    """Tahrirlash callback"""
-    field = callback.data.split("_")[1]
-    
-    field_names = {
-        'name': ('ism', '✍️ Yangi ismingizni kiriting:'),
-        'phone': ('telefon raqam', '📱 Yangi telefon raqamingizni kiriting yoki yuborishingiz mumkin:'),
-        'address': ('manzil', '📍 Yangi manzilingizni kiriting:')
-    }
-    
-    field_name, prompt = field_names.get(field, ('', ''))
-    
-    await callback.message.delete()
-    
-    if field == 'phone':
-        await callback.message.answer(prompt, reply_markup=get_phone_keyboard())
-    else:
-        await callback.message.answer(prompt, reply_markup=get_cancel_keyboard())
-    
-    if field == 'name':
-        await state.set_state(EditStates.editing_name)
-    elif field == 'phone':
-        await state.set_state(EditStates.editing_phone)
-    else:
-        await state.set_state(EditStates.editing_address)
-    
-    await callback.answer()
+# Ism
+@dp.callback_query(F.data == "edit_name")
+async def edit_name_start(c: CallbackQuery, state: FSMContext):
+    await c.message.delete()
+    await c.message.answer("✍️ Yangi ismingizni kiriting:", reply_markup=get_cancel_keyboard())
+    await state.set_state(EditStates.editing_name)
 
 @dp.message(EditStates.editing_name)
-async def edit_name_handler(message: Message, state: FSMContext):
-    """Ismni tahrirlash"""
-    name = message.text.strip()
-    
-    if len(name) < 3:
-        await message.answer("❌ Ism juda qisqa. Kamida 3 ta harf kiriting:")
-        return
-    
-    await message.answer("⏳ Saqlanmoqda...", reply_markup=ReplyKeyboardRemove())
-    
-    res = await update_user_api(message.from_user.id, {"name": name})
-    if res and res.status_code in [200, 204]:
-        await message.answer("✅ Ism muvaffaqiyatli yangilandi!", reply_markup=get_main_menu())
+async def save_new_name(m: Message, state: FSMContext):
+    if await update_user_api(m.from_user.id, {"name": m.text}): 
+        await m.answer("✅ Ismingiz muvaffaqiyatli o'zgartirildi!", reply_markup=get_main_menu())
     else:
-        await message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.", reply_markup=get_main_menu())
-    
+        await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
 
-@dp.message(EditStates.editing_phone, F.contact | F.text)
-async def edit_phone_handler(message: Message, state: FSMContext):
-    """Telefon raqamni tahrirlash"""
-    if message.contact:
-        phone = message.contact.phone_number
+# Tel
+@dp.callback_query(F.data == "edit_phone")
+async def edit_phone_start(c: CallbackQuery, state: FSMContext):
+    await c.message.delete()
+    await c.message.answer("📱 Yangi telefon raqamingizni yuboring:", reply_markup=get_phone_keyboard())
+    await state.set_state(EditStates.editing_phone)
+
+@dp.message(EditStates.editing_phone)
+async def save_new_phone(m: Message, state: FSMContext):
+    if m.text == "❌ Bekor qilish": return await cancel_handler(m, state)
+    p = m.contact.phone_number if m.contact else m.text
+    # Tozalash
+    p = p.replace(" ", "").replace("+", "")
+    if not p.isdigit(): return await m.answer("⚠️ Noto'g'ri format.")
+    p = "+" + p
+
+    if await update_user_api(m.from_user.id, {"phone": p}): 
+        await m.answer("✅ Telefon raqam yangilandi!", reply_markup=get_main_menu())
     else:
-        phone = message.text.strip()
-        phone = phone.replace(" ", "").replace("-", "").replace("(", "").replace(")", "")
-        if not phone.startswith("+"):
-            if phone.startswith("998"):
-                phone = "+" + phone
-            else:
-                phone = "+998" + phone
-        
-        if len(phone) < 12:
-            await message.answer(
-                "❌ Noto'g'ri telefon raqam formati.\n\n"
-                "Namuna: +998901234567 yoki 901234567",
-                reply_markup=get_phone_keyboard()
-            )
-            return
-    
-    await message.answer("⏳ Saqlanmoqda...", reply_markup=ReplyKeyboardRemove())
-    
-    res = await update_user_api(message.from_user.id, {"phone": phone})
-    if res and res.status_code in [200, 204]:
-        await message.answer("✅ Telefon raqam muvaffaqiyatli yangilandi!", reply_markup=get_main_menu())
-    else:
-        await message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.", reply_markup=get_main_menu())
-    
+        await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
+
+# Manzil
+@dp.callback_query(F.data == "edit_address")
+async def edit_address_start(c: CallbackQuery, state: FSMContext):
+    await c.message.delete()
+    await c.message.answer("📍 Yangi manzilni yozing yoki lokatsiya yuboring:", reply_markup=get_location_keyboard())
+    await state.set_state(EditStates.editing_address)
 
 @dp.message(EditStates.editing_address)
-async def edit_address_handler(message: Message, state: FSMContext):
-    """Manzilni tahrirlash"""
-    address = message.text.strip()
-    
-    if len(address) < 10:
-        await message.answer("❌ Manzil juda qisqa. To'liqroq kiriting:")
-        return
-    
-    await message.answer("⏳ Saqlanmoqda...", reply_markup=ReplyKeyboardRemove())
-    
-    res = await update_user_api(message.from_user.id, {"address": address})
-    if res and res.status_code in [200, 204]:
-        await message.answer("✅ Manzil muvaffaqiyatli yangilandi!", reply_markup=get_main_menu())
+async def save_new_address(m: Message, state: FSMContext):
+    if m.text == "❌ Bekor qilish": return await cancel_handler(m, state)
+    a = location_to_str(m.location) if m.location else m.text
+    if await update_user_api(m.from_user.id, {"address": a}): 
+        await m.answer("✅ Manzil yangilandi!", reply_markup=get_main_menu())
     else:
-        await message.answer("❌ Xatolik yuz berdi. Qaytadan urinib ko'ring.", reply_markup=get_main_menu())
-    
+        await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
 
-# --- 4. YANGI BUYURTMA BERISH ---
 
+# --- 4. 🛍 YANGI BUYURTMA ---
 @dp.message(F.text == "🛍 Yangi buyurtma")
 async def start_order(message: Message, state: FSMContext):
-    """Yangi buyurtma boshlash"""
     await state.clear()
     await state.update_data(basket=[])
     
-    await message.answer("⏳ Mahsulotlar yuklanmoqda...", reply_markup=ReplyKeyboardRemove())
-    await show_products(message, state)
-
-async def show_products(message: Message, state: FSMContext):
-    """Mahsulotlarni ko'rsatish"""
+    msg = await message.answer("⏳ Mahsulotlar yuklanmoqda...", reply_markup=ReplyKeyboardRemove())
     products = await get_products()
+    await msg.delete()
     
+    await show_products(message, products, state)
+
+async def show_products(message: Message, products: list, state: FSMContext):
     if not products:
-        await message.answer(
-            "❌ Hozirda mahsulotlar mavjud emas.\n\n"
-            "Iltimos, keyinroq qaytadan urinib ko'ring.",
-            reply_markup=get_main_menu()
-        )
-        await state.clear()
+        await message.answer("🤷‍♂️ Hozircha mahsulotlar mavjud emas.", reply_markup=get_main_menu())
         return
     
     data = await state.get_data()
     basket_ids = [item['product_id'] for item in data.get('basket', [])]
+    available = [p for p in products if p['id'] not in basket_ids]
     
-    # Hali savatga qo'shilmagan mahsulotlar
-    available_products = [p for p in products if p['id'] not in basket_ids]
-    
-    if not available_products:
+    if not available:
         await show_basket_summary(message, state)
         return
     
     kb = []
-    for product in available_products:
-        price_text = f"{format_price(product['sell_price'])} so'm"
-        kb.append([InlineKeyboardButton(
-            text=f"{product['name']} - {price_text}",
-            callback_data=f"product_{product['id']}"
-        )])
+    # Mahsulotlar ro'yxatini chiroyli qilish (2 qatorli)
+    row = []
+    for p in available:
+        btn = InlineKeyboardButton(text=f"{p['name']}", callback_data=f"product_{p['id']}")
+        row.append(btn)
+        if len(row) == 2:
+            kb.append(row)
+            row = []
+    if row: kb.append(row)
     
-    # Savat tugmasi (agar savat bo'sh bo'lmasa)
-    basket = data.get('basket', [])
-    if basket:
-        kb.append([InlineKeyboardButton(
-            text=f"🛒 Savatni ko'rish ({len(basket)})",
-            callback_data="view_basket"
-        )])
-    
-    kb.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order")])
+    # Boshqaruv tugmalari
+    controls = []
+    if data.get('basket'):
+        controls.append(InlineKeyboardButton(text=f"🛒 Savat ({len(data['basket'])})", callback_data="view_basket"))
+    controls.append(InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order"))
+    kb.append(controls)
     
     await message.answer(
-        "🛍 <b>Mahsulotlar</b>\n\n"
-        "Buyurtma qilmoqchi bo'lgan mahsulotni tanlang:",
-        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb),
+        "🛍 <b>Quyidagi mahsulotlardan birini tanlang:</b>", 
+        reply_markup=InlineKeyboardMarkup(inline_keyboard=kb), 
         parse_mode="HTML"
     )
     await state.set_state(OrderStates.selecting_product)
 
-@dp.callback_query(F.data == "cancel_order")
-async def cancel_order(callback: CallbackQuery, state: FSMContext):
-    """Buyurtmani bekor qilish"""
-    await callback.message.delete()
-    await state.clear()
-    await callback.message.answer("❌ Buyurtma bekor qilindi.", reply_markup=get_main_menu())
-    await callback.answer()
-
-@dp.callback_query(F.data == "view_basket")
-async def view_basket_callback(callback: CallbackQuery, state: FSMContext):
-    """Savatni ko'rish"""
-    await callback.message.delete()
-    await show_basket_summary(callback.message, state)
-    await callback.answer()
-
 @dp.callback_query(OrderStates.selecting_product, F.data.startswith("product_"))
 async def product_selected(callback: CallbackQuery, state: FSMContext):
-    """Mahsulot tanlanganda"""
-    product_id = int(callback.data.split("_")[1])
+    pid = int(callback.data.split("_")[1])
     products = await get_products()
-    product = next((p for p in products if p['id'] == product_id), None)
+    product = next((p for p in products if p['id'] == pid), None)
     
-    if not product:
-        await callback.answer("❌ Mahsulot topilmadi", show_alert=True)
-        return
+    if not product: return await callback.answer("⚠️ Mahsulot topilmadi")
     
     await state.update_data(current_product=product)
     
-    text = (
+    caption = (
         f"📦 <b>{product['name']}</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n"
         f"💰 <b>Narxi:</b> {format_price(product['sell_price'])} so'm\n\n"
-        f"✍️ Nechta buyurtma qilasiz?\n"
-        f"(Masalan: 1, 2, 3...)"
+        f"🔢 <b>Nechta buyurtma qilmoqchisiz?</b>\n"
+        f"Miqdorni yozib yuboring (masalan: 1, 2, 5):"
     )
     
     await callback.message.delete()
     
-    # Agar rasm bo'lsa
     if product.get('image'):
-        await callback.message.answer_photo(
-            photo=product['image'],
-            caption=text,
-            parse_mode="HTML",
-            reply_markup=get_cancel_keyboard()
-        )
+        await callback.message.answer_photo(product['image'], caption=caption, parse_mode="HTML", reply_markup=get_cancel_keyboard())
     else:
-        await callback.message.answer(
-            text,
-            parse_mode="HTML",
-            reply_markup=get_cancel_keyboard()
-        )
+        await callback.message.answer(caption, parse_mode="HTML", reply_markup=get_cancel_keyboard())
     
     await state.set_state(OrderStates.entering_quantity)
-    await callback.answer()
 
 @dp.message(OrderStates.entering_quantity)
 async def quantity_entered(message: Message, state: FSMContext):
-    """Miqdor kiritilganda"""
-    if not message.text.isdigit():
-        await message.answer("❌ Iltimos, faqat son kiriting (masalan: 1, 2, 3):")
+    if not message.text.isdigit(): 
+        await message.answer("⚠️ Iltimos, faqat raqam kiriting (masalan: 2).")
         return
     
-    quantity = int(message.text)
-    
-    if quantity <= 0:
-        await message.answer("❌ Miqdor kamida 1 bo'lishi kerak:")
+    qty = int(message.text)
+    if qty <= 0: 
+        await message.answer("⚠️ Miqdor 1 dan kam bo'lmasligi kerak.")
         return
-    
-    if quantity > 100:
-        await message.answer("❌ Bir vaqtning o'zida 100 tadan ko'p buyurtma berib bo'lmaydi:")
-        return
-    
+
     data = await state.get_data()
-    product = data['current_product']
+    prod = data['current_product']
     basket = data.get('basket', [])
     
     # Savatga qo'shish
     basket.append({
-        "product_id": product['id'],
-        "product_name": product['name'],
-        "quantity": quantity,
-        "price": product['sell_price']
+        "product_id": prod['id'], 
+        "product_name": prod['name'], 
+        "quantity": qty, 
+        "price": prod['sell_price']
     })
-    
     await state.update_data(basket=basket)
     
-    # Davom etish tugmalari
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="➕ Yana mahsulot qo'shish", callback_data="add_more")],
         [InlineKeyboardButton(text="✅ Buyurtmani rasmiylashtirish", callback_data="finalize_order")]
     ])
     
-    total_items = sum(item['quantity'] for item in basket)
     await message.answer(
-        f"✅ Savatga qo'shildi!\n\n"
-        f"📦 Savatingizda: {len(basket)} xil mahsulot, jami {total_items} dona",
+        f"✅ <b>{prod['name']}</b> ({qty} dona) savatga qo'shildi.", 
+        parse_mode="HTML", 
         reply_markup=kb
     )
     await state.set_state(OrderStates.confirming_basket)
 
-@dp.callback_query(OrderStates.confirming_basket, F.data == "add_more")
-async def add_more_products(callback: CallbackQuery, state: FSMContext):
-    """Yana mahsulot qo'shish"""
-    await callback.message.delete()
-    await show_products(callback.message, state)
-    await callback.answer()
-
-@dp.callback_query(OrderStates.confirming_basket, F.data == "finalize_order")
-async def finalize_order_callback(callback: CallbackQuery, state: FSMContext):
-    """Buyurtmani rasmiylashtirish"""
-    await callback.message.delete()
-    await show_basket_summary(callback.message, state)
-    await callback.answer()
+@dp.callback_query(OrderStates.confirming_basket, F.data.in_({"add_more", "view_basket", "finalize_order"}))
+async def basket_actions(c: CallbackQuery, state: FSMContext):
+    await c.message.delete()
+    if c.data == "add_more": 
+        products = await get_products()
+        await show_products(c.message, products, state)
+    else: 
+        await show_basket_summary(c.message, state)
 
 async def show_basket_summary(message: Message, state: FSMContext):
-    """Savat xulasasini ko'rsatish"""
     data = await state.get_data()
     basket = data.get('basket', [])
-    
     if not basket:
-        await message.answer(
-            "🛒 Savatingiz bo'sh.\n\n"
-            "Mahsulot qo'shish uchun /start ni bosing.",
-            reply_markup=get_main_menu()
-        )
-        await state.clear()
-        return
-    
-    # Jami summa hisoblash
-    total_amount = sum(item['quantity'] * item['price'] for item in basket)
-    total_items = sum(item['quantity'] for item in basket)
-    
-    # Savatdagi mahsulotlar
+        await message.answer("🛒 Savatingiz bo'sh.", reply_markup=get_main_menu())
+        return await state.clear()
+
+    total = sum(i['quantity'] * i['price'] for i in basket)
     items_text = ""
-    for idx, item in enumerate(basket, 1):
-        item_total = item['quantity'] * item['price']
-        items_text += (
-            f"{idx}. <b>{item['product_name']}</b>\n"
-            f"   {item['quantity']} dona × {format_price(item['price'])} = "
-            f"{format_price(item_total)} so'm\n\n"
-        )
-    
+    for idx, x in enumerate(basket, 1):
+        items_text += f"{idx}. <b>{x['product_name']}</b>\n   {x['quantity']} ta x {format_price(x['price'])} = {format_price(x['quantity']*x['price'])}\n"
+
     text = (
-        f"🛒 <b>Sizning savatchangiz</b>\n"
-        f"━━━━━━━━━━━━━━━━━━━\n\n"
+        f"🛒 <b>Sizning savatingiz:</b>\n"
+        f"━━━━━━━━━━━━━━━━━━━\n"
         f"{items_text}"
         f"━━━━━━━━━━━━━━━━━━━\n"
-        f"📊 <b>Jami:</b> {total_items} dona mahsulot\n"
-        f"💰 <b>To'lov summasi:</b> {format_price(total_amount)} so'm"
+        f"💰 <b>Jami summa:</b> {format_price(total)} so'm"
     )
     
     kb = InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✅ Tasdiqlash va davom etish", callback_data="confirm_basket")],
-        [InlineKeyboardButton(text="🗑 Savatni tozalash", callback_data="clear_basket")],
-        [InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_order")]
+        [InlineKeyboardButton(text="🗑 Savatni tozalash", callback_data="clear_basket")]
     ])
-    
     await message.answer(text, parse_mode="HTML", reply_markup=kb)
-    await state.set_state(OrderStates.confirming_basket)
 
 @dp.callback_query(F.data == "clear_basket")
-async def clear_basket(callback: CallbackQuery, state: FSMContext):
-    """Savatni tozalash"""
-    await state.update_data(basket=[])
-    await callback.message.delete()
-    await callback.message.answer(
-        "🗑 Savat tozalandi.\n\n"
-        "Yangi buyurtma uchun /start ni bosing.",
-        reply_markup=get_main_menu()
-    )
+async def clear_basket(c: CallbackQuery, state: FSMContext):
     await state.clear()
-    await callback.answer("✅ Savat tozalandi")
+    await c.message.delete()
+    await c.message.answer("🗑 Savat tozalandi.", reply_markup=get_main_menu())
+
+# --- MANZIL TANLASH (MANTIQ VA UX) ---
 
 @dp.callback_query(F.data == "confirm_basket")
-async def confirm_basket(callback: CallbackQuery, state: FSMContext):
-    """Savatni tasdiqlash va yetkazish vaqtini so'rash"""
-    await callback.message.delete()
-    await callback.message.answer(
-        "🕒 <b>Yetkazib berish vaqti</b>\n\n"
-        "Qachon yetkazib berish kerak?\n\n"
-        "Masalan:\n"
-        "• Tezroq\n"
-        "• 1 soatdan keyin\n"
-        "• Bugun kechqurun\n"
-        "• Ertaga ertalab 10:00\n\n"
-        "Yoki qo'shimcha izoh qoldiring:",
+async def ask_address_type(c: CallbackQuery, state: FSMContext):
+    await c.message.delete()
+    
+    # UX uchun: Avval foydalanuvchini joriy manzilini eslatamiz
+    # Lekin API call qilmasdan tez ishlashi uchun umumiy so'raymiz
+    
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏠 Profilimdagi manzilga")],
+            [KeyboardButton(text="📍 Yangi lokatsiya yuborish", request_location=True)],
+            [KeyboardButton(text="❌ Bekor qilish")]
+        ], resize_keyboard=True, one_time_keyboard=True
+    )
+    
+    await c.message.answer(
+        "📍 <b>Buyurtmani qayerga yetkazib beraylik?</b>\n\n"
+        "Profilimgizdagi manzilni tanlashingiz yoki yangi manzil (lokatsiya) yuborishingiz mumkin.", 
+        parse_mode="HTML", 
+        reply_markup=kb
+    )
+    await state.set_state(OrderStates.choosing_address_type)
+
+@dp.message(OrderStates.choosing_address_type)
+async def handle_address_choice(message: Message, state: FSMContext):
+    if message.text == "❌ Bekor qilish":
+        await cancel_handler(message, state)
+        return
+
+    # 1. Eski manzil
+    if message.text == "🏠 Profilimdagi manzilga":
+        await state.update_data(custom_location=None)
+        await message.answer("✅ Tushunarli, profilingizdagi manzilga yetkazamiz.")
+    
+    # 2. Lokatsiya
+    elif message.location:
+        loc_str = location_to_str(message.location)
+        await state.update_data(custom_location=loc_str)
+        await message.answer("✅ Yangi lokatsiya qabul qilindi.")
+        
+    # 3. Matnli manzil (agar yozsa)
+    elif message.text:
+        await state.update_data(custom_location=message.text)
+        await message.answer(f"✅ Yangi manzil qabul qilindi.")
+        
+    else:
+        await message.answer("⚠️ Iltimos, manzilni tanlang yoki yuboring.")
+        return
+
+    await message.answer(
+        "🕒 <b>Qachon yetkazib beraylik?</b>\n"
+        "Masalan: 'Tezroq', 'Soat 18:00 da', 'Ertaga ertalab'.\n\n"
+        "Iltimos, vaqtni yozib yuboring:", 
         parse_mode="HTML",
         reply_markup=get_cancel_keyboard()
     )
     await state.set_state(OrderStates.entering_delivery_time)
-    await callback.answer()
 
 @dp.message(OrderStates.entering_delivery_time)
-async def delivery_time_entered(message: Message, state: FSMContext):
-    """Yetkazish vaqti kiritilganda"""
-    delivery_time = message.text.strip()
-    
-    if len(delivery_time) < 2:
-        await message.answer("❌ Iltimos, yetkazish vaqtini kiriting:")
+async def create_order_final(message: Message, state: FSMContext):
+    if len(message.text) < 2:
+        await message.answer("⚠️ Iltimos, vaqtni to'liqroq yozing.")
         return
-    
+
+    delivery_time = message.text
     data = await state.get_data()
     basket = data.get('basket', [])
     
-    # Buyurtma yaratish
-    order_items = [
-        {
-            "product_id": item['product_id'],
-            "quantity": item['quantity']
-        }
-        for item in basket
-    ]
+    # Mantiq: Agar custom_location bo'lsa uni yuboramiz, bo'lmasa None (backend profilni oladi)
+    custom_location = data.get('custom_location')
+    
+    items = [{"product_id": i['product_id'], "quantity": i['quantity']} for i in basket]
     
     payload = {
         "telegram_id": str(message.from_user.id),
-        "items": order_items,
-        "delivery_time": delivery_time
+        "items": items,
+        "delivery_time": delivery_time,
+        "current_location": custom_location
     }
     
-    await message.answer("⏳ Buyurtma rasmiylashtirilmoqda...", reply_markup=ReplyKeyboardRemove())
-    
+    msg = await message.answer("⏳ Buyurtma rasmiylashtirilmoqda...", reply_markup=ReplyKeyboardRemove())
     res = await create_order_api(payload)
+    await msg.delete()
     
     if res and res.status_code in [200, 201]:
-        try:
-            order_data = res.json()
-            order_id = order_data.get('id', '???')
-            
-            await message.answer(
-                f"✅ <b>Buyurtma muvaffaqiyatli yaratildi!</b>\n\n"
-                f"🆔 Buyurtma raqami: #{order_id}\n\n"
-                f"📞 Tez orada operatorlarimiz siz bilan bog'lanadi.\n\n"
-                f"📦 Buyurtma holatini <b>\"Mening buyurtmalarim\"</b> bo'limidan kuzatishingiz mumkin.",
-                parse_mode="HTML",
-                reply_markup=get_main_menu()
-            )
-        except:
-            await message.answer(
-                "✅ Buyurtma muvaffaqiyatli yaratildi!\n\n"
-                "Tez orada operatorlarimiz siz bilan bog'lanadi.",
-                reply_markup=get_main_menu()
-            )
-        
-        await state.clear()
+        order_id = res.json().get('id', 'Noma\'lum')
+        await message.answer(
+            f"🎉 <b>Buyurtmangiz qabul qilindi!</b>\n\n"
+            f"📞 Tez orada operatorlarimiz siz bilan bog'lanib, buyurtmani tasdiqlashadi.\n"
+            f"Xaridingiz uchun rahmat!", 
+            parse_mode="HTML", 
+            reply_markup=get_main_menu()
+        )
     else:
-        error_msg = "❌ Buyurtma yaratishda xatolik yuz berdi.\n\n"
-        
-        if res:
-            try:
-                error_data = res.json()
-                if isinstance(error_data, dict):
-                    for key, value in error_data.items():
-                        if isinstance(value, list):
-                            error_msg += f"{key}: {', '.join(map(str, value))}\n"
-                        else:
-                            error_msg += f"{key}: {value}\n"
-            except:
-                error_msg += "Iltimos, qaytadan urinib ko'ring."
-        
-        await message.answer(error_msg, reply_markup=get_main_menu())
-        await state.clear()
+        await message.answer("❌ Kechirasiz, buyurtma yaratishda texnik xatolik yuz berdi. Iltimos, birozdan so'ng qayta urinib ko'ring.", reply_markup=get_main_menu())
+    
+    await state.clear()
 
-# --- BOSHQA XABARLAR ---
+# --- 5. 📦 MENING BUYURTMALARIM ---
+@dp.message(F.text == "📦 Mening buyurtmalarim")
+async def my_orders_handler(message: Message):
+    await show_my_orders(message, message.from_user.id, 0)
 
-@dp.message()
-async def unknown_message(message: Message):
-    """Noma'lum xabarlar uchun"""
-    await message.answer(
-        "🤔 Kechirasiz, tushunmadim.\n\n"
-        "Iltimos, pastdagi tugmalardan foydalaning yoki /start ni bosing.",
-        reply_markup=get_main_menu()
+@dp.callback_query(F.data.startswith("my_orders_"))
+async def my_orders_pagination(callback: CallbackQuery):
+    await callback.message.delete()
+    await show_my_orders(callback, callback.from_user.id, int(callback.data.split("_")[-1]))
+
+async def show_my_orders(msg_obj, tg_id, offset):
+    orders = await get_my_orders_api(tg_id, 5, offset)
+    if isinstance(msg_obj, CallbackQuery): msg_obj = msg_obj.message
+
+    if not orders:
+        if offset == 0: await msg_obj.answer("📦 Sizda hozircha buyurtmalar tarixi mavjud emas.", reply_markup=get_main_menu())
+        else: await msg_obj.answer("📦 Boshqa buyurtmalar yo'q.")
+        return
+
+    for o in orders:
+        txt = (
+            f"🆔 <b>Buyurtma #{o['id']}</b>\n"
+            f"📅 Sana: {format_date(o.get('created_at'))}\n"
+            f"📊 Holati: <b>{o['status'].capitalize()}</b>\n"
+            f"💰 Jami: {format_price(o.get('total_amount'))} so'm\n"
+        )
+        if o.get('courier_name'): txt += f"🛵 Kuryer: {o['courier_name']}\n"
+        if o.get('rating'): txt += f"⭐️ Sizning bahoyingiz: {o['rating']}/5\n"
+        
+        kb = None
+        if o['status'] == 'yetkazildi' and not o.get('rating'):
+            kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="⭐ Xizmatni baholash", callback_data=f"start_rate_{o['id']}") ]])
+        
+        await bot.send_message(tg_id, txt, parse_mode="HTML", reply_markup=kb)
+
+    nav = []
+    if offset > 0: nav.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"my_orders_{offset-5}"))
+    if len(orders) == 5: nav.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"my_orders_{offset+5}"))
+    if nav: await bot.send_message(tg_id, f"📄 Sahifa {offset//5 + 1}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[nav]))
+
+# --- BAHOLASH ---
+@dp.callback_query(F.data.startswith("start_rate_"))
+async def start_rate(c: CallbackQuery, state: FSMContext):
+    oid = int(c.data.split("_")[-1])
+    await state.update_data(rate_oid=oid)
+    await c.message.answer(
+        f"🆔 <b>Buyurtma #{oid}</b>\n\n"
+        "Xizmatimiz sifatini necha yulduz bilan baholaysiz?", 
+        parse_mode="HTML",
+        reply_markup=get_rating_keyboard(oid)
     )
+    await state.set_state(RateStates.selecting_stars)
+    await c.answer()
 
-# --- MAIN ---
+@dp.callback_query(RateStates.selecting_stars)
+async def stars_sel(c: CallbackQuery, state: FSMContext):
+    rating = int(c.data.split("_")[-1])
+    await state.update_data(rating=rating)
+    
+    # Xabarni tahrirlash (try-except bilan, xavfsizlik uchun)
+    try:
+        await c.message.edit_text(
+            f"⭐️ <b>{rating} yulduz</b> tanladingiz.\n\n"
+            f"✍️ Iltimos, fikr yoki taklifingizni yozib qoldiring:",
+            parse_mode="HTML"
+        )
+    except TelegramBadRequest:
+        # Agar rasm bo'lsa yoki edit qilib bo'lmasa yangi xabar yuboramiz
+        await c.message.delete()
+        await c.message.answer(f"⭐️ <b>{rating} yulduz</b> tanladingiz.\n\n✍️ Izohingizni yozib qoldiring:", parse_mode="HTML")
+
+    await state.set_state(RateStates.entering_comment)
+
+@dp.message(RateStates.entering_comment)
+async def comment_ent(m: Message, state: FSMContext):
+    d = await state.get_data()
+    
+    msg = await m.answer("⏳ Fikringiz saqlanmoqda...")
+    res = await rate_order_api(d['rate_oid'], d['rating'], m.text)
+    await msg.delete()
+    
+    if res and res.status_code in [200, 201]:
+        await m.answer("✅ Rahmat! Sizning bahoyingiz biz uchun muhim.", reply_markup=get_main_menu())
+    else: 
+        await m.answer("❌ Xatolik yuz berdi, lekin bahoyingizni keyinroq yana urinib ko'rishingiz mumkin.", reply_markup=get_main_menu())
+    await state.clear()
+
 async def main():
-    """Botni ishga tushirish"""
-    print("🤖 User Bot ishga tushmoqda...")
-    print(f"📡 Backend URL: {BACKEND_URL}")
-    
-    # Webhook ni o'chirish va polling boshlash
+    print("🚀 Bot ishga tushirildi! (To'xtatish uchun Ctrl+C)")
     await bot.delete_webhook(drop_pending_updates=True)
-    print("✅ Bot tayyor!")
-    
-    await dp.start_polling(bot)
+    try:
+        await dp.start_polling(bot)
+    except Exception as e:
+        logger.error(f"Critical Error: {e}")
 
 if __name__ == "__main__":
     try:
         asyncio.run(main())
     except KeyboardInterrupt:
-        print("\n⛔ Bot to'xtatildi")
-    except Exception as e:
-        logger.error(f"Fatal error: {e}")
-        print(f"❌ Xatolik: {e}")
+        print("\n⛔ Bot qo'lda to'xtatildi.")

@@ -32,11 +32,11 @@ logger = logging.getLogger("Kuryer")
 logger.info("🚚 Kuryer moduli yuklandi")
 
 # ASOSIY API URL
-API_BASE_URL = os.getenv("API_BASE_URL", "https://shukrona-backend-production.up.railway.app")
+API_BASE_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 logger.info(f"🔧 Kuryer moduli uchun API URL: {API_BASE_URL}")
 
 # Bot tokenini environment variable dan olamiz yoki to'g'ridan yozamiz
-BOT_TOKEN = "8372365010:AAGWUttrZul_DiAWAQiP-1osdQ5r_2ldFes"
+BOT_TOKEN = "8372693619:AAEiSlEnmkUBpXu958yb9KmuSYs-jt3ZstU"
 
 if not BOT_TOKEN:
     logger.error("❌ Iltimos, haqiqiy BOT_TOKEN ni kiriting!")
@@ -149,8 +149,32 @@ class CourierClient:
             check_success, check_data = await self.check_courier_exists(telegram_id)
             
             if check_success and check_data.get('exists'):
-                # Qo'shimcha ma'lumotlar olish uchun boshqa API chaqiramiz (agar mavjud bo'lsa)
-                # Hozircha oddiy ma'lumotlarni qaytaramiz
+                # Bugungi kun uchun hisobot olish
+                today = datetime.now().strftime('%Y-%m-%d')
+                history_endpoint = f"/couriers/me/history/?telegram_id={telegram_id}&start_date={today}&end_date={today}"
+                
+                history_success, history_data = await self._make_request("GET", history_endpoint)
+                
+                if history_success and isinstance(history_data, dict):
+                    # Tarixdan ma'lumotlarni olamiz
+                    total_items_sold = history_data.get('total_items_sold', 0)
+                    total_deliveries = history_data.get('total_delivered_orders', 0)
+                    total_money = history_data.get('total_money_collected', 0)
+                    rating = history_data.get('average_rating', 0)
+                    
+                    return True, {
+                        'id': telegram_id,
+                        'name': check_data.get('courier_name', 'Kuryer'),
+                        'telegram_id': telegram_id,
+                        'status': 'active',
+                        'rating': rating,
+                        'total_deliveries': total_deliveries,
+                        'total_items_sold': total_items_sold,
+                        'total_money': total_money,
+                        'phone': check_data.get('phone', 'Noma\'lum')
+                    }
+                
+                # Agar tarix API ishlamasa, oddiy ma'lumotlar bilan qaytaramiz
                 return True, {
                     'id': telegram_id,
                     'name': check_data.get('courier_name', 'Kuryer'),
@@ -158,6 +182,7 @@ class CourierClient:
                     'status': 'active',
                     'rating': 0,
                     'total_deliveries': 0,
+                    'total_items_sold': 0,
                     'total_money': 0,
                     'phone': check_data.get('phone', 'Noma\'lum')
                 }
@@ -167,6 +192,57 @@ class CourierClient:
         except Exception as e:
             logger.error(f"Kuryer ma'lumotlarini olishda xatolik: {e}")
             return False, None
+    
+    async def get_courier_daily_report(self, telegram_id: str, date: str = None) -> Tuple[bool, Optional[Dict]]:
+        """Kuryer kunlik hisobotini olish"""
+        try:
+            if not date:
+                date = datetime.now().strftime('%Y-%m-%d')
+            
+            endpoint = f"/couriers/me/history/?telegram_id={telegram_id}&start_date={date}&end_date={date}"
+            success, data = await self._make_request("GET", endpoint)
+            
+            if success and isinstance(data, dict):
+                return True, data
+            return False, {"error": "Hisobot olinmadi"}
+            
+        except Exception as e:
+            logger.error(f"Kunlik hisobot olishda xatolik: {e}")
+            return False, {"error": f"Ulanish xatosi: {str(e)}"}
+    
+    async def get_courier_weekly_report(self, telegram_id: str) -> Tuple[bool, Optional[Dict]]:
+        """Kuryer haftalik hisobotini olish"""
+        try:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=7)).strftime('%Y-%m-%d')
+            
+            endpoint = f"/couriers/me/history/?telegram_id={telegram_id}&start_date={start_date}&end_date={end_date}"
+            success, data = await self._make_request("GET", endpoint)
+            
+            if success and isinstance(data, dict):
+                return True, data
+            return False, {"error": "Hisobot olinmadi"}
+            
+        except Exception as e:
+            logger.error(f"Haftalik hisobot olishda xatolik: {e}")
+            return False, {"error": f"Ulanish xatosi: {str(e)}"}
+    
+    async def get_courier_monthly_report(self, telegram_id: str) -> Tuple[bool, Optional[Dict]]:
+        """Kuryer oylik hisobotini olish"""
+        try:
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            
+            endpoint = f"/couriers/me/history/?telegram_id={telegram_id}&start_date={start_date}&end_date={end_date}"
+            success, data = await self._make_request("GET", endpoint)
+            
+            if success and isinstance(data, dict):
+                return True, data
+            return False, {"error": "Hisobot olinmadi"}
+            
+        except Exception as e:
+            logger.error(f"Oylik hisobot olishda xatolik: {e}")
+            return False, {"error": f"Ulanish xatosi: {str(e)}"}
     
     # ============ BUYURTMALAR FUNKSIYALARI ============
     
@@ -367,7 +443,7 @@ def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked
             InlineKeyboardButton(text="✅ Qabul qilish", callback_data=f"accept_order_{order_id}"),
             InlineKeyboardButton(text="❌ Rad etish", callback_data=f"reject_order_{order_id}")
         ])
-    elif order_status in ["qabul_qilindi", "yetkazilmoqda"]:
+    elif order_status in ["qabul_qilindi", "yetkazilmoqda", "kuryerda"]:
         keyboard.inline_keyboard.append([
             InlineKeyboardButton(text="🚚 Yetkazildi", callback_data=f"deliver_order_{order_id}")
         ])
@@ -378,7 +454,7 @@ def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked
     
     return keyboard
 
-def get_delivery_actions_keyboard(order_id: int, is_price_locked: bool = False) -> InlineKeyboardMarkup:
+def get_delivery_actions_keyboard(order_id: int, is_price_locked: bool = False, order_status: str = "yetkazilmoqda") -> InlineKeyboardMarkup:
     """Yetkazishdan keyingi amallar klaviaturasi"""
     if is_price_locked:
         return InlineKeyboardMarkup(inline_keyboard=[
@@ -388,19 +464,28 @@ def get_delivery_actions_keyboard(order_id: int, is_price_locked: bool = False) 
             ]
         ])
     else:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"update_price_{order_id}"),
-                InlineKeyboardButton(text="🎁 Bonus qo'shish", callback_data=f"add_bonus_{order_id}")
-            ],
-            [
-                InlineKeyboardButton(text="🔒 Narxni bloklash", callback_data=f"lock_price_{order_id}")
-            ],
-            [
-                InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
-                InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
-            ]
-        ])
+        # Faqat kuryerda yoki yetkazilmoqda holatlarida narxni o'zgartirish mumkin
+        if order_status in ["kuryerda", "yetkazilmoqda"]:
+            return InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"update_price_{order_id}"),
+                    InlineKeyboardButton(text="🎁 Bonus qo'shish", callback_data=f"add_bonus_{order_id}")
+                ],
+                [
+                    InlineKeyboardButton(text="🔒 Narxni bloklash", callback_data=f"lock_price_{order_id}")
+                ],
+                [
+                    InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
+                    InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
+                ]
+            ])
+        else:
+            return InlineKeyboardMarkup(inline_keyboard=[
+                [
+                    InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
+                    InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
+                ]
+            ])
 
 def get_confirmation_keyboard(action: str, order_id: int, data: Any = None) -> InlineKeyboardMarkup:
     """Tasdiqlash klaviaturasi"""
@@ -422,6 +507,7 @@ def format_courier_welcome(courier_data: Dict) -> str:
         courier_id = courier_data.get('telegram_id', 'Noma\'lum')
         rating = courier_data.get('rating', 0)
         total_deliveries = courier_data.get('total_deliveries', 0)
+        total_items_sold = courier_data.get('total_items_sold', 0)
         total_money = courier_data.get('total_money', 0)
         phone = courier_data.get('phone', 'Noma\'lum')
         
@@ -434,6 +520,7 @@ def format_courier_welcome(courier_data: Dict) -> str:
             f"🆔 {hd.bold('Telegram ID:')} {courier_id}\n"
             f"⭐ {hd.bold('Reyting:')} {stars} ({rating:.1f}/5.0)\n"
             f"📦 {hd.bold('Yetkazilgan:')} {total_deliveries} ta\n"
+            f"🛍 {hd.bold('Sotilgan mahsulotlar:')} {total_items_sold} ta\n"
             f"💰 {hd.bold('Jami daromad:')} {total_money:,.0f} so'm\n\n"
             f"―――――――――――――――――――――\n"
             f"Bu yerda siz o'zingizning barcha buyurtmalaringizni ko'rishingiz mumkin."
@@ -453,17 +540,26 @@ def format_order_detail(order: Dict) -> str:
         total_amount = order.get('total_amount', 0)
         customer_name = order.get('user_name', 'Noma\'lum mijoz')
         customer_phone = order.get('user_phone', 'Noma\'lum')
+        user_type = order.get('user_type', 'standard')
         delivery_time = order.get('delivery_time', 'Belgilanmagan')
         user_address = order.get('user_address', 'Noma\'lum')
         created_at = order.get('created_at', 'Noma\'lum')
         is_price_locked = order.get('is_price_locked', False)
+        
+        # User type uchun emoji va ma'no
+        user_type_display = {
+            'standard': '👤 Standart',
+            'maxsus': '👑 Maxsus',
+            'vip': '⭐ VIP'
+        }.get(user_type, f'👤 {user_type.capitalize()}')
         
         status_colors = {
             'kutilmoqda': '🟡',
             'qabul_qilindi': '🟢',
             'yetkazilmoqda': '🔵',
             'yetkazildi': '✅',
-            'bekor_qilindi': '❌'
+            'bekor_qilindi': '❌',
+            'kuryerda': '🚚'
         }
         
         status_icon = status_colors.get(status, '⚪')
@@ -474,6 +570,7 @@ def format_order_detail(order: Dict) -> str:
             f"👤 {hd.bold('Mijoz:')} {customer_name}\n"
             f"📞 {hd.bold('Telefon:')} {customer_phone}\n"
             f"📍 {hd.bold('Manzil:')} {user_address}\n"
+            f"👑 {hd.bold('Mijoz turi:')} {user_type_display}\n"
             f"💰 {hd.bold('Summa:')} {total_amount:,} so'm\n"
             f"🔐 {hd.bold('Narx holati:')} {price_lock_status}\n"
             f"⏰ {hd.bold('Yetkazish vaqti:')} {delivery_time}\n"
@@ -488,7 +585,17 @@ def format_order_detail(order: Dict) -> str:
                 product_name = item.get('product_name', 'Noma\'lum mahsulot')
                 quantity = item.get('quantity', 1)
                 price = item.get('price', 0)
-                formatted += f"  • {product_name} - {quantity} x {price:,} so'm\n"
+                is_bonus = item.get('is_bonus', False)
+                bonus_mark = "🎁 " if is_bonus else "  "
+                formatted += f"  {bonus_mark}• {product_name} - {quantity} x {price:,} so'm\n"
+        
+        bonus_items = order.get('bonus_items', [])
+        if bonus_items:
+            formatted += f"\n🎁 {hd.bold('Bonus mahsulotlar:')}\n"
+            for item in bonus_items:
+                product_name = item.get('product_name', 'Noma\'lum mahsulot')
+                quantity = item.get('quantity', 1)
+                formatted += f"  • {product_name} - {quantity} ta (Tekin)\n"
         
         return formatted
         
@@ -502,6 +609,7 @@ def format_balance_info(courier_data: Dict) -> str:
         courier_name = courier_data.get('name', 'Kuryer')
         total_money = courier_data.get('total_money', 0)
         total_deliveries = courier_data.get('total_deliveries', 0)
+        total_items_sold = courier_data.get('total_items_sold', 0)
         rating = courier_data.get('rating', 0)
         
         stars = '⭐' * int(rating) + '☆' * (5 - int(rating))
@@ -511,6 +619,7 @@ def format_balance_info(courier_data: Dict) -> str:
             f"👤 {hd.bold('Kuryer:')} {courier_name}\n\n"
             f"📊 {hd.bold('STATISTIKA:')}\n"
             f"├ 📦 Yetkazilgan buyurtmalar: {total_deliveries} ta\n"
+            f"├ 🛍 Sotilgan mahsulotlar: {total_items_sold} ta\n"
             f"├ 💰 Jami to'plangan summa: {total_money:,.0f} so'm\n"
             f"└ ⭐ O'rtacha reyting: {stars} ({rating:.1f}/5.0)\n\n"
             f"💰 {hd.bold('HOZIRGI BALANS:')} 0 so'm\n"
@@ -524,6 +633,97 @@ def format_balance_info(courier_data: Dict) -> str:
     except Exception as e:
         logger.error(f"Balans formatlashda xatolik: {e}")
         return f"❌ Balans ma'lumotlarini formatlashda xatolik"
+
+def format_daily_report(report_data: Dict) -> str:
+    """Kunlik hisobotni formatlash"""
+    try:
+        courier_name = report_data.get('courier_name', 'Kuryer')
+        total_deliveries = report_data.get('total_delivered_orders', 0)
+        total_items_sold = report_data.get('total_items_sold', 0)
+        total_money = report_data.get('total_money_collected', 0)
+        rating = report_data.get('average_rating', 0)
+        
+        formatted = (
+            f"📊 {hd.bold('KUNLIK HISOBOT')}\n\n"
+            f"👤 {hd.bold('Kuryer:')} {courier_name}\n"
+            f"📅 {hd.bold('Sana:')} {datetime.now().strftime('%d.%m.%Y')}\n\n"
+            f"📈 {hd.bold('BUGUNGI KO\'RSATKICHLAR:')}\n"
+            f"├ 📦 Yetkazilgan buyurtmalar: {total_deliveries} ta\n"
+            f"├ 🛍 Sotilgan mahsulotlar: {total_items_sold} ta\n"
+            f"├ 💰 Bugungi daromad: {total_money:,.0f} so'm\n"
+            f"└ ⭐ Bugungi reyting: {rating:.1f}/5.0\n\n"
+            f"―――――――――――――――――――――\n"
+            f"ℹ️ Ma'lumotlar bugungi kun uchun"
+        )
+        
+        return formatted
+        
+    except Exception as e:
+        logger.error(f"Kunlik hisobot formatlashda xatolik: {e}")
+        return f"❌ Kunlik hisobot formatlashda xatolik"
+
+def format_weekly_report(report_data: Dict) -> str:
+    """Haftalik hisobotni formatlash"""
+    try:
+        courier_name = report_data.get('courier_name', 'Kuryer')
+        total_deliveries = report_data.get('total_delivered_orders', 0)
+        total_items_sold = report_data.get('total_items_sold', 0)
+        total_money = report_data.get('total_money_collected', 0)
+        rating = report_data.get('average_rating', 0)
+        
+        start_date = (datetime.now() - timedelta(days=7)).strftime('%d.%m.%Y')
+        end_date = datetime.now().strftime('%d.%m.%Y')
+        
+        formatted = (
+            f"📈 {hd.bold('HAFTALIK HISOBOT')}\n\n"
+            f"👤 {hd.bold('Kuryer:')} {courier_name}\n"
+            f"📅 {hd.bold('Davr:')} {start_date} - {end_date}\n\n"
+            f"📊 {hd.bold('HAFTALIK KO\'RSATKICHLAR:')}\n"
+            f"├ 📦 Jami buyurtmalar: {total_deliveries} ta\n"
+            f"├ 🛍 Jami sotilganlar: {total_items_sold} ta\n"
+            f"├ 💰 Jami daromad: {total_money:,.0f} so'm\n"
+            f"├ 📆 O'rtacha kunlik: {total_deliveries/7:.1f} ta\n"
+            f"└ ⭐ O'rtacha reyting: {rating:.1f}/5.0\n\n"
+            f"―――――――――――――――――――――\n"
+            f"ℹ️ Ma'lumotlar oxirgi 7 kun uchun"
+        )
+        
+        return formatted
+        
+    except Exception as e:
+        logger.error(f"Haftalik hisobot formatlashda xatolik: {e}")
+        return f"❌ Haftalik hisobot formatlashda xatolik"
+
+def format_monthly_report(report_data: Dict) -> str:
+    """Oylik hisobotni formatlash"""
+    try:
+        courier_name = report_data.get('courier_name', 'Kuryer')
+        total_deliveries = report_data.get('total_delivered_orders', 0)
+        total_items_sold = report_data.get('total_items_sold', 0)
+        total_money = report_data.get('total_money_collected', 0)
+        rating = report_data.get('average_rating', 0)
+        
+        month_name = datetime.now().strftime('%B %Y')
+        
+        formatted = (
+            f"📉 {hd.bold('OYLIK HISOBOT')}\n\n"
+            f"👤 {hd.bold('Kuryer:')} {courier_name}\n"
+            f"📅 {hd.bold('Oy:')} {month_name}\n\n"
+            f"📊 {hd.bold('OYLIK KO\'RSATKICHLAR:')}\n"
+            f"├ 📦 Jami buyurtmalar: {total_deliveries} ta\n"
+            f"├ 🛍 Jami sotilganlar: {total_items_sold} ta\n"
+            f"├ 💰 Jami daromad: {total_money:,.0f} so'm\n"
+            f"├ 📆 O'rtacha kunlik: {total_deliveries/30:.1f} ta\n"
+            f"└ ⭐ O'rtacha reyting: {rating:.1f}/5.0\n\n"
+            f"―――――――――――――――――――――\n"
+            f"ℹ️ Ma'lumotlar oxirgi 30 kun uchun"
+        )
+        
+        return formatted
+        
+    except Exception as e:
+        logger.error(f"Oylik hisobot formatlashda xatolik: {e}")
+        return f"❌ Oylik hisobot formatlashda xatolik"
 
 # ============================================================================
 # ROUTER VA HANDLERLAR
@@ -645,16 +845,25 @@ async def show_orders_by_status(message: types.Message, status: str, status_name
         for order in orders:
             order_id = order.get('id', 0)
             customer_name = order.get('user_name', 'Noma\'lum mijoz')
+            user_type = order.get('user_type', 'standard')
             total_amount = order.get('total_amount', 0)
             delivery_time = order.get('delivery_time', 'Belgilanmagan')
             is_price_locked = order.get('is_price_locked', False)
+            
+            # User type uchun emoji
+            user_type_icon = {
+                'standard': '👤',
+                'maxsus': '👑',
+                'vip': '⭐'
+            }.get(user_type, '👤')
             
             status_colors = {
                 'kutilmoqda': '🟡',
                 'qabul_qilindi': '🟢',
                 'yetkazilmoqda': '🔵',
                 'yetkazildi': '✅',
-                'bekor_qilindi': '❌'
+                'bekor_qilindi': '❌',
+                'kuryerda': '🚚'
             }
             
             status_icon = status_colors.get(status, '⚪')
@@ -662,7 +871,7 @@ async def show_orders_by_status(message: types.Message, status: str, status_name
             
             order_text = (
                 f"📦 {hd.bold(f'Buyurtma #{order_id}')}\n"
-                f"👤 {hd.bold('Mijoz:')} {customer_name}\n"
+                f"{user_type_icon} {hd.bold('Mijoz:')} {customer_name}\n"
                 f"💰 {hd.bold('Summa:')} {total_amount:,} so'm\n"
                 f"⏰ {hd.bold('Vaqt:')} {delivery_time}\n"
                 f"📊 {hd.bold('Holat:')} {status_icon} {status.capitalize()}\n"
@@ -700,7 +909,7 @@ async def handle_active_orders(message: types.Message):
         active_orders = []
         for order in orders:
             status = order.get('status', '')
-            if status in ['qabul_qilindi', 'yetkazilmoqda']:
+            if status in ['qabul_qilindi', 'yetkazilmoqda', 'kuryerda']:
                 active_orders.append(order)
         
         if active_orders:
@@ -710,14 +919,23 @@ async def handle_active_orders(message: types.Message):
             for order in active_orders:
                 order_id = order.get('id', 0)
                 customer_name = order.get('user_name', 'Noma\'lum mijoz')
+                user_type = order.get('user_type', 'standard')
                 total_amount = order.get('total_amount', 0)
                 delivery_time = order.get('delivery_time', 'Belgilanmagan')
                 status = order.get('status', '')
                 is_price_locked = order.get('is_price_locked', False)
                 
+                # User type uchun emoji
+                user_type_icon = {
+                    'standard': '👤',
+                    'maxsus': '👑',
+                    'vip': '⭐'
+                }.get(user_type, '👤')
+                
                 status_colors = {
                     'qabul_qilindi': '🟢',
-                    'yetkazilmoqda': '🔵'
+                    'yetkazilmoqda': '🔵',
+                    'kuryerda': '🚚'
                 }
                 
                 status_icon = status_colors.get(status, '⚪')
@@ -725,7 +943,7 @@ async def handle_active_orders(message: types.Message):
                 
                 order_text = (
                     f"📦 {hd.bold(f'Buyurtma #{order_id}')}\n"
-                    f"👤 {hd.bold('Mijoz:')} {customer_name}\n"
+                    f"{user_type_icon} {hd.bold('Mijoz:')} {customer_name}\n"
                     f"💰 {hd.bold('Summa:')} {total_amount:,} so'm\n"
                     f"⏰ {hd.bold('Vaqt:')} {delivery_time}\n"
                     f"📊 {hd.bold('Holat:')} {status_icon} {status.capitalize()}\n"
@@ -1155,15 +1373,17 @@ async def handle_deliver_order(callback_query: types.CallbackQuery):
         return
     
     is_price_locked = order_detail.get('is_price_locked', False)
+    order_status = order_detail.get('status', '')
     
     # Yetkazish amallari klaviaturasini ko'rsatish
     await callback_query.message.answer(
         f"🔄 {hd.bold('KEYINGI AMALNI TANLANG')}\n\n"
         f"📦 Buyurtma: #{order_id}\n"
-        f"🔐 Narx holati: {'🔒 BLOKLANGAN' if is_price_locked else '🔓 BLOKLANGANMAS'}\n\n"
+        f"🔐 Narx holati: {'🔒 BLOKLANGAN' if is_price_locked else '🔓 BLOKLANGANMAS'}\n"
+        f"📊 Holat: {order_status.capitalize()}\n\n"
         f"Quyidagi amallardan birini tanlang yoki buyurtmani yakunlang:",
         parse_mode="HTML",
-        reply_markup=get_delivery_actions_keyboard(order_id, is_price_locked)
+        reply_markup=get_delivery_actions_keyboard(order_id, is_price_locked, order_status)
     )
 
 @courier_router.callback_query(F.data.startswith("confirm_delivery_"))
@@ -1333,6 +1553,7 @@ async def handle_my_balance(message: types.Message, state: FSMContext):
             f"👤 {hd.bold('Kuryer:')} Kuryer\n\n"
             f"📊 {hd.bold('STATISTIKA:')}\n"
             f"├ 📦 Yetkazilgan buyurtmalar: 0 ta\n"
+            f"├ 🛍 Sotilgan mahsulotlar: 0 ta\n"
             f"├ 💰 Jami to'plangan summa: 0 so'm\n"
             f"└ ⭐ O'rtacha reyting: ☆☆☆☆☆ (0/5.0)\n\n"
             f"💰 {hd.bold('HOZIRGI BALANS:')} 0 so'm\n"
@@ -1346,47 +1567,68 @@ async def handle_my_balance(message: types.Message, state: FSMContext):
 @courier_router.message(F.text == "📊 Kunlik hisobot")
 async def handle_daily_report(message: types.Message):
     """Kunlik hisobot"""
-    report_text = (
-        f"📊 {hd.bold('KUNLIK HISOBOT')}\n\n"
-        f"📅 Sana: {datetime.now().strftime('%d.%m.%Y')}\n"
-        f"📦 Bugungi buyurtmalar: 0 ta\n"
-        f"✅ Yetkazilganlar: 0 ta\n"
-        f"💰 Bugungi daromad: 0 so'm\n"
-        f"📈 O'rtacha buyurtma: 0 so'm\n\n"
-        f"―――――――――――――――――――――\n"
-        f"ℹ️ Hozircha kunlik hisobot ma'lumotlari mavjud emas."
-    )
-    await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    user_id = str(message.from_user.id)
+    logger.info(f"📊 'Kunlik hisobot' - User: {user_id}")
+    
+    await message.answer("⏳ Bugungi hisobot yuklanmoqda...")
+    
+    success, report_data = await client.get_courier_daily_report(user_id)
+    
+    if success:
+        report_text = format_daily_report(report_data)
+        await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    else:
+        error_details = report_data.get('error', 'Noma\'lum xato') if isinstance(report_data, dict) else str(report_data)
+        error_message = (
+            f"❌ {hd.bold('KUNLIK HISOBOT OLINMADI')}\n\n"
+            f"Xato: {error_details}\n\n"
+            f"ℹ️ Iltimos, keyinroq urinib ko'ring."
+        )
+        await message.answer(error_message, parse_mode="HTML", reply_markup=get_balance_keyboard())
 
 @courier_router.message(F.text == "📈 Haftalik hisobot")
 async def handle_weekly_report(message: types.Message):
     """Haftalik hisobot"""
-    report_text = (
-        f"📈 {hd.bold('HAFTALIK HISOBOT')}\n\n"
-        f"📅 Davr: Oxirgi 7 kun\n"
-        f"📦 Jami buyurtmalar: 0 ta\n"
-        f"✅ Yetkazilganlar: 0 ta\n"
-        f"💰 Jami daromad: 0 so'm\n"
-        f"📊 O'rtacha kunlik: 0 ta\n\n"
-        f"―――――――――――――――――――――\n"
-        f"ℹ️ Hozircha haftalik hisobot ma'lumotlari mavjud emas."
-    )
-    await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    user_id = str(message.from_user.id)
+    logger.info(f"📈 'Haftalik hisobot' - User: {user_id}")
+    
+    await message.answer("⏳ Haftalik hisobot yuklanmoqda...")
+    
+    success, report_data = await client.get_courier_weekly_report(user_id)
+    
+    if success:
+        report_text = format_weekly_report(report_data)
+        await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    else:
+        error_details = report_data.get('error', 'Noma\'lum xato') if isinstance(report_data, dict) else str(report_data)
+        error_message = (
+            f"❌ {hd.bold('HAFTALIK HISOBOT OLINMADI')}\n\n"
+            f"Xato: {error_details}\n\n"
+            f"ℹ️ Iltimos, keyinroq urinib ko'ring."
+        )
+        await message.answer(error_message, parse_mode="HTML", reply_markup=get_balance_keyboard())
 
 @courier_router.message(F.text == "📉 Oylik hisobot")
 async def handle_monthly_report(message: types.Message):
     """Oylik hisobot"""
-    report_text = (
-        f"📉 {hd.bold('OYLIK HISOBOT')}\n\n"
-        f"📅 Oy: {datetime.now().strftime('%B %Y')}\n"
-        f"📦 Jami buyurtmalar: 0 ta\n"
-        f"✅ Yetkazilganlar: 0 ta\n"
-        f"💰 Jami daromad: 0 so'm\n"
-        f"📊 O'rtacha kunlik: 0 ta\n\n"
-        f"―――――――――――――――――――――\n"
-        f"ℹ️ Hozircha oylik hisobot ma'lumotlari mavjud emas."
-    )
-    await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    user_id = str(message.from_user.id)
+    logger.info(f"📉 'Oylik hisobot' - User: {user_id}")
+    
+    await message.answer("⏳ Oylik hisobot yuklanmoqda...")
+    
+    success, report_data = await client.get_courier_monthly_report(user_id)
+    
+    if success:
+        report_text = format_monthly_report(report_data)
+        await message.answer(report_text, parse_mode="HTML", reply_markup=get_balance_keyboard())
+    else:
+        error_details = report_data.get('error', 'Noma\'lum xato') if isinstance(report_data, dict) else str(report_data)
+        error_message = (
+            f"❌ {hd.bold('OYLIK HISOBOT OLINMADI')}\n\n"
+            f"Xato: {error_details}\n\n"
+            f"ℹ️ Iltimos, keyinroq urinib ko'ring."
+        )
+        await message.answer(error_message, parse_mode="HTML", reply_markup=get_balance_keyboard())
 
 @courier_router.message(F.text == "⭐ Mening reytingim")
 async def handle_my_rating(message: types.Message):

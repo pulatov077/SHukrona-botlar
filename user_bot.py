@@ -133,7 +133,9 @@ def format_price(price):
     except: return str(price)
 
 def location_to_str(location: types.Location) -> str:
-    return f"https://www.google.com/maps?q={location.latitude},{location.longitude}"
+    # Google o'rniga Yandex Maps linkini qaytaramiz
+    return f"https://yandex.uz/maps/?text={location.latitude},{location.longitude}"
+
 
 def format_date(date_str):
     if not date_str: return "-"

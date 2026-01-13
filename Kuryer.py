@@ -519,8 +519,8 @@ def format_courier_welcome(courier_data: Dict) -> str:
             f"📱 {hd.bold('Telefon:')} {phone}\n"
             f"🆔 {hd.bold('Telegram ID:')} {courier_id}\n"
             f"⭐ {hd.bold('Reyting:')} {stars} ({rating:.1f}/5.0)\n"
-            f"📦 {hd.bold('Yetkazilgan:')} {total_deliveries} ta\n"
-            f"🛍 {hd.bold('Sotilgan mahsulotlar:')} {total_items_sold} ta\n"
+            f"📦 {hd.bold('Yetkazilgan buyurtmalar:')} {total_deliveries} ta\n"
+            f"🛍 {hd.bold('Sotilgan mahsulotlar(baklachka):')} {total_items_sold} ta\n"
             f"💰 {hd.bold('Jami daromad:')} {total_money:,.0f} so'm\n\n"
             f"―――――――――――――――――――――\n"
             f"Bu yerda siz o'zingizning barcha buyurtmalaringizni ko'rishingiz mumkin."
@@ -1636,29 +1636,108 @@ async def handle_my_rating(message: types.Message):
     user_id = str(message.from_user.id)
     logger.info(f"⭐ 'Mening reytingim' - User: {user_id}")
     
-    rating_text = (
-        f"⭐ {hd.bold('MENING REYTINGIM')}\n\n"
-        f"📊 {hd.bold('Umumiy reyting:')} ☆☆☆☆☆\n"
-        f"👥 {hd.bold('Sharhlar:')} 0 ta\n"
-        f"🏆 {hd.bold('Daraja:')} Yangi kuryer\n\n"
-        f"🎯 {hd.bold('Keyingi daraja:')} 4.0 reyting\n"
-        f"📈 {hd.bold('Yetishmaslik:')} 4.0 ball\n\n"
-        f"―――――――――――――――――――――\n"
-        f"ℹ️ Hozircha reyting ma'lumotlari mavjud emas."
-    )
+    await message.answer("⏳ Reyting ma'lumotlari yuklanmoqda...")
     
-    await message.answer(rating_text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    # Bugungi kun uchun hisobot olish (rating ham shu yerdan keladi)
+    today = datetime.now().strftime('%Y-%m-%d')
+    endpoint = f"/couriers/me/history/?telegram_id={user_id}&start_date={today}&end_date={today}"
+    
+    success, report_data = await client._make_request("GET", endpoint)
+    
+    if success and isinstance(report_data, dict):
+        # Ma'lumotlarni olish
+        courier_name = report_data.get('courier_name', 'Kuryer')
+        average_rating = report_data.get('average_rating', 0)
+        total_delivered_orders = report_data.get('total_delivered_orders', 0)
+        total_items_sold = report_data.get('total_items_sold', 0)
+        total_money_collected = report_data.get('total_money_collected', 0)
+        courier_id = report_data.get('courier_id', 0)
+        
+        # Reytingni yulduzchalarga aylantirish
+        rating_stars = '⭐' * int(average_rating) + '☆' * (5 - int(average_rating))
+        
+        # Darajani aniqlash
+        if average_rating >= 4.5:
+            rank = "👑 Elite Kuryer"
+            next_rank = "🏆 Master Kuryer (5.0)"
+            next_need = 5.0 - average_rating
+        elif average_rating >= 4.0:
+            rank = "🥈 Professional Kuryer"
+            next_rank = "👑 Elite Kuryer (4.5)"
+            next_need = 4.5 - average_rating
+        elif average_rating >= 3.5:
+            rank = "🥉 Tajribali Kuryer"
+            next_rank = "🥈 Professional Kuryer (4.0)"
+            next_need = 4.0 - average_rating
+        elif average_rating >= 3.0:
+            rank = "📈 Rivojlanayotgan Kuryer"
+            next_rank = "🥉 Tajribali Kuryer (3.5)"
+            next_need = 3.5 - average_rating
+        elif average_rating >= 2.0:
+            rank = "🟢 Faol Kuryer"
+            next_rank = "📈 Rivojlanayotgan Kuryer (3.0)"
+            next_need = 3.0 - average_rating
+        elif average_rating >= 1.0:
+            rank = "🟡 Yangi kuryer"
+            next_rank = "🟢 Faol Kuryer (2.0)"
+            next_need = 2.0 - average_rating
+        else:
+            rank = "🔴 Boshlang'ich"
+            next_rank = "🟡 Yangi kuryer (1.0)"
+            next_need = 1.0 - average_rating
+        
+        # Sharhlar soni (taxminiy - har 5 buyurtmaga 1 sharh deb hisoblaymiz)
+        reviews_count = total_delivered_orders // 5 if total_delivered_orders > 0 else 0
+        
+        rating_text = (
+            f"⭐ {hd.bold('MENING REYTINGIM')}\n\n"
+            f"👤 {hd.bold('Kuryer:')} {courier_name}\n"
+            f"🆔 {hd.bold('ID:')} #{courier_id}\n\n"
+            f"📊 {hd.bold('Umumiy reyting:')}\n"
+            f"   {rating_stars}\n"
+            f"   {average_rating:.1f}/5.0 ball\n\n"
+            f"👥 {hd.bold('Sharhlar:')} {reviews_count} ta\n"
+            f"🏆 {hd.bold('Daraja:')} {rank}\n\n"
+            f"📈 {hd.bold('Ish faolligi:')}\n"
+            f"├ 📦 Yetkazilgan buyurtmalar: {total_delivered_orders} ta\n"
+            f"├ 🛍 Sotilgan mahsulotlar: {total_items_sold} ta\n"
+            f"└ 💰 Jami daromad: {total_money_collected:,.0f} so'm\n\n"
+            f"🎯 {hd.bold('Keyingi daraja:')}\n"
+            f"   {next_rank}\n"
+            f"   📈 Yetishmaslik: {next_need:.1f} ball\n\n"
+            f"―――――――――――――――――――――\n"
+            f"ℹ️ Reyting mijozlarning baholari asosida hisoblanadi."
+        )
+        
+        await message.answer(rating_text, parse_mode="HTML", reply_markup=get_main_keyboard())
+    else:
+        # Agar API dan ma'lumot olinmasa, default xabar
+        error_details = report_data.get('error', 'Noma\'lum xato') if isinstance(report_data, dict) else str(report_data)
+        
+        error_message = (
+            f"⭐ {hd.bold('MENING REYTINGIM')}\n\n"
+            f"📊 {hd.bold('Umumiy reyting:')} ☆☆☆☆☆\n"
+            f"👥 {hd.bold('Sharhlar:')} 0 ta\n"
+            f"🏆 {hd.bold('Daraja:')} Yangi kuryer\n\n"
+            f"🎯 {hd.bold('Keyingi daraja:')} 4.0 reyting\n"
+            f"📈 {hd.bold('Yetishmaslik:')} 4.0 ball\n\n"
+            f"―――――――――――――――――――――\n"
+            f"ℹ️ Reyting ma'lumotlari hozircha mavjud emas.\n"
+            f"Xato: {error_details}"
+        )
+        
+        await message.answer(error_message, parse_mode="HTML", reply_markup=get_main_keyboard())
 
 @courier_router.message(F.text == "🔄 Yangilash")
 async def handle_refresh(message: types.Message, state: FSMContext):
     """Ma'lumotlarni yangilash"""
     user_id = str(message.from_user.id)
-    logger.info(f"🔄 'Yangilash' - User: {user_id}")
     
     await message.answer("⏳ Ma'lumotlar yangilanmoqda...")
     
     # Kuryer mavjudligini qayta tekshirish
     check_success, check_data = await client.check_courier_exists(user_id)
+    logger.info(f"🔄 'Yangilash' - User: {user_id}")
     
     if check_success:
         if check_data.get('exists'):

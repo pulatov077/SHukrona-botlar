@@ -422,17 +422,37 @@ def get_orders_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-def get_bonus_products_keyboard() -> ReplyKeyboardMarkup:
-    """Bonus mahsulotlar klaviaturasi"""
-    keyboard = [
-        [KeyboardButton(text="🍏 Olma (ID: 1)")],
-        [KeyboardButton(text="🍌 Banan (ID: 2)")],
-        [KeyboardButton(text="🥕 Sabzi (ID: 3)")],
-        [KeyboardButton(text="🧃 Sharbat (ID: 4)")],
-        [KeyboardButton(text="🍬 Konfet (ID: 5)")],
-        [KeyboardButton(text="⬅️ Orqaga")]
-    ]
-    return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+async def get_bonus_products_keyboard() -> ReplyKeyboardMarkup:
+    """Bonus mahsulotlar klaviaturasi (API dan olinadi)"""
+    try:
+        # API dan mahsulotlarni olish
+        success, products = await client._make_request("GET", "/products/")
+        
+        if success and isinstance(products, list) and len(products) > 0:
+            keyboard = []
+            
+            # Barcha mahsulotlarni olish
+            for product in products:
+                product_id = product.get('id', 0)
+                product_name = product.get('name', 'Noma\'lum mahsulot')
+                
+                # Klaviatura tugmasini yaratish
+                button_text = f"{product_name} (ID: {product_id})"
+                keyboard.append([KeyboardButton(text=button_text)])
+            
+            # Orqaga tugmasi
+            keyboard.append([KeyboardButton(text="⬅️ Orqaga")])
+            
+            return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
+        
+        else:
+            # Agar API ishlamasa yoki mahsulot bo'lmasa, xato xabari
+            logger.error("API dan mahsulotlar olinmadi yoki bo'sh ro'yxat qaytdi")
+            return None
+            
+    except Exception as e:
+        logger.error(f"Bonus mahsulotlar klaviaturasini yaratishda xatolik: {e}")
+        return None
 
 def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked: bool = False) -> InlineKeyboardMarkup:
     """Buyurtma uchun amallar klaviaturasi"""
@@ -1146,24 +1166,185 @@ async def handle_new_price_input(message: types.Message, state: FSMContext):
 
 @courier_router.callback_query(F.data.startswith("add_bonus_"))
 async def handle_add_bonus(callback_query: types.CallbackQuery, state: FSMContext):
-    """Bonus mahsulot qo'shish"""
+    """Bonus mahsulot qo'shish - API dan mahsulotlar ro'yxatini olish"""
     order_id = int(callback_query.data.replace("add_bonus_", ""))
+    user_id = str(callback_query.from_user.id)
     
     await callback_query.answer()
     
-    await callback_query.message.answer(
-        f"🎁 {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
-        f"📦 Buyurtma: #{order_id}\n\n"
-        f"Bonus mahsulot tanlang:",
-        reply_markup=get_bonus_products_keyboard()
-    )
+    logger.info(f"🎁 Bonus qo'shilmoqda: Order #{order_id}, User: {user_id}")
     
-    await state.set_state(CourierStates.waiting_for_bonus_product)
-    await state.update_data(order_id=order_id)
+    # 1. Buyurtma holatini tekshirish - Faqat 'kuryerda' holatida ishlaydi
+    success, order_detail = await client.get_order_detail(order_id)
+    
+    if not success:
+        error_message = (
+            f"❌ {hd.bold('BUYURTMA MA\'LUMOTLARI OLINMADI')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n\n"
+            f"Iltimos, keyinroq urinib ko'ring."
+        )
+        await callback_query.message.answer(error_message, parse_mode="HTML")
+        return
+    
+    order_status = order_detail.get('status', '')
+    
+    if order_status != 'kuryerda':
+        error_message = (
+            f"❌ {hd.bold('BONUS QO\'SHISH MUMMKIN EMAS')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n"
+            f"📊 Holat: {order_status.capitalize()}\n\n"
+            f"ℹ️ Faqat 'kuryerda' holatidagi buyurtmalarga bonus qo'shish mumkin.\n"
+            f"Buyurtma holati: {order_status}"
+        )
+        await callback_query.message.answer(error_message, parse_mode="HTML")
+        return
+    
+    # 2. API dan mahsulotlar ro'yxatini olish
+    keyboard = await get_bonus_products_keyboard()
+    
+    if keyboard:
+        await callback_query.message.answer(
+            f"🎁 {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n"
+            f"👤 Kuryer ID: {user_id}\n"
+            f"📊 Holat: ✅ Kuryerda\n\n"
+            f"ℹ️ Quyidagi mahsulotlardan bonus tanlang:",
+            parse_mode="HTML",
+            reply_markup=keyboard
+        )
+        
+        await state.set_state(CourierStates.waiting_for_bonus_product)
+        await state.update_data(order_id=order_id, user_id=user_id)
+    else:
+        error_message = (
+            f"❌ {hd.bold('MAHSULOTLAR OLINMADI')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n\n"
+            f"Mahsulotlar ro'yxatini yuklab bo'lmadi.\n"
+            f"ℹ️ Sabablar:\n"
+            f"• API server ishlamayotgan bo'lishi mumkin\n"
+            f"• Mahsulotlar mavjud emas\n"
+            f"• Internet aloqasi bilan muammo\n\n"
+            f"Iltimos, keyinroq urinib ko'ring yoki admin bilan bog'lanishingiz kerak."
+        )
+        await callback_query.message.answer(error_message, parse_mode="HTML")
+
 
 @courier_router.message(CourierStates.waiting_for_bonus_product)
 async def handle_bonus_product_selection(message: types.Message, state: FSMContext):
-    """Bonus mahsulot tanlash"""
+    """Bonus mahsulot tanlash va API ga yuborish"""
+    product_text = message.text
+    
+    state_data = await state.get_data()
+    order_id = state_data.get('order_id')
+    user_id = state_data.get('user_id')
+    
+    if not order_id or not user_id:
+        await message.answer(
+            "❌ Xatolik: Buyurtma yoki kuryer ma'lumotlari topilmadi.",
+            reply_markup=get_main_keyboard()
+        )
+        await state.set_state(CourierStates.main_menu)
+        return
+    
+    # 1. Orqaga tugmasi
+    if product_text == "⬅️ Orqaga":
+        await message.answer(
+            "🔙 Orqaga qaytildi.",
+            reply_markup=get_orders_keyboard()
+        )
+        await state.clear()
+        return
+    
+    # 2. API dan mahsulotlarni olish
+    success, products = await client._make_request("GET", "/products/")
+    
+    if not success:
+        error_text = products if isinstance(products, str) else "Noma'lum xato"
+        await message.answer(
+            f"❌ API xatosi: {error_text}",
+            reply_markup=get_orders_keyboard()
+        )
+        await state.clear()
+        return
+    
+    if not isinstance(products, list):
+        await message.answer(
+            "❌ Mahsulotlar formati noto'g'ri.",
+            reply_markup=get_orders_keyboard()
+        )
+        await state.clear()
+        return
+    
+    if len(products) == 0:
+        await message.answer(
+            "❌ Mahsulotlar ro'yxati bo'sh.",
+            reply_markup=get_orders_keyboard()
+        )
+        await state.clear()
+        return
+    
+    # 3. Tanlangan mahsulotni topish
+    selected_product = None
+    
+    for product in products:
+        product_id = product.get('id')
+        product_name = product.get('name', '')
+        product_price = product.get('sell_price', 0)
+        
+        if product_id is not None:
+            # Tugma matnini formatlash: Nomi (Narx: ... so'm)
+            expected_format = f"{product_name} ({product_price:,} so'm)"
+            
+            if product_text == expected_format:
+                selected_product = product
+                break
+    
+    if selected_product:
+        product_id = selected_product.get('id')
+        product_name = selected_product.get('name', 'Noma\'lum mahsulot')
+        product_price = selected_product.get('sell_price', 0)
+        
+        # 4. Tasdiqlash so'rash
+        await message.answer(
+            f"⚠️ {hd.bold('BONUS MAHSULOT QO\'SHISHNI TASDIQLASH')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n"
+            f"👤 Kuryer ID: {user_id}\n"
+            f"🎁 Mahsulot: {product_name}\n"
+            f"🆔 Mahsulot ID: {product_id}\n"
+            f"💰 Asl narxi: {product_price:,} so'm\n"
+            f"📦 Miqdor: 1 ta\n"
+            f"💸 Bonus narxi: 0 so'm (Tekin)\n\n"
+            f"⚠️ Diqqat:\n"
+            f"• Bu mahsulot mijozga tekin sifatida beriladi\n"
+            f"• Ombor qoldig'i kamayadi\n"
+            f"• Umumiy savdo summasi o'zgarmaydi\n\n"
+            f"Haqiqatan ham bonus mahsulot qo'shmoqchimisiz?",
+            parse_mode="HTML",
+            reply_markup=get_confirmation_keyboard("add_bonus", order_id, product_id)
+        )
+        
+        await state.clear()
+    else:
+        # 5. Agar mahsulot topilmasa, qayta mahsulotlar ro'yxatini ko'rsatish
+        keyboard = await get_bonus_products_keyboard()
+        if keyboard:
+            await message.answer(
+                f"❌ {hd.bold('MAHSULOT TOPILMADI')}\n\n"
+                f"\"{product_text}\" nomli mahsulot topilmadi.\n"
+                f"Iltimos, quyidagi mahsulotlardan birini tanlang:",
+                parse_mode="HTML",
+                reply_markup=keyboard
+            )
+        else:
+            await message.answer(
+                "❌ Mahsulotlar ro'yxati mavjud emas.",
+                reply_markup=get_orders_keyboard()
+            )
+            await state.clear()
+
+@courier_router.message(CourierStates.waiting_for_bonus_product)
+async def handle_bonus_product_selection(message: types.Message, state: FSMContext):
+    """Bonus mahsulot tanlash - API dan mahsulotlar ro'yxatini olish"""
     product_text = message.text
     
     state_data = await state.get_data()
@@ -1177,37 +1358,77 @@ async def handle_bonus_product_selection(message: types.Message, state: FSMConte
         await state.set_state(CourierStates.main_menu)
         return
     
-    product_mapping = {
-        "🍏 Olma (ID: 1)": {"id": 1, "name": "Olma"},
-        "🍌 Banan (ID: 2)": {"id": 2, "name": "Banan"},
-        "🥕 Sabzi (ID: 3)": {"id": 3, "name": "Sabzi"},
-        "🧃 Sharbat (ID: 4)": {"id": 4, "name": "Sharbat"},
-        "🍬 Konfet (ID: 5)": {"id": 5, "name": "Konfet"}
-    }
-    
-    if product_text not in product_mapping:
+    # Orqaga tugmasi
+    if product_text == "⬅️ Orqaga":
         await message.answer(
-            "❌ Iltimos, ro'yxatdagi mahsulotlardan birini tanlang.",
-            reply_markup=get_bonus_products_keyboard()
+            "🔙 Orqaga qaytildi.",
+            reply_markup=get_orders_keyboard()
         )
+        await state.clear()
         return
     
-    product_info = product_mapping[product_text]
+    # API dan mahsulotlarni olish
+    success, products = await client._make_request("GET", "/products/")
     
-    # Tasdiqlash so'rash
-    await message.answer(
-        f"⚠️ {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
-        f"📦 Buyurtma: #{order_id}\n"
-        f"🎁 Mahsulot: {product_info['name']}\n"
-        f"🆔 Mahsulot ID: {product_info['id']}\n"
-        f"📦 Miqdor: 1 ta\n"
-        f"💰 Status: Tekin (0 so'm)\n\n"
-        f"Haqiqatan ham bonus mahsulot qo'shmoqchimisiz?",
-        parse_mode="HTML",
-        reply_markup=get_confirmation_keyboard("add_bonus", order_id, product_info['id'])
-    )
+    if not success or not isinstance(products, list):
+        await message.answer(
+            "❌ Mahsulotlar ro'yxati olinmadi. Iltimos, qaytadan urinib ko'ring.",
+            reply_markup=get_orders_keyboard()
+        )
+        await state.clear()
+        return
     
-    await state.clear()
+    # Tanlangan mahsulotni topish
+    selected_product = None
+    
+    for product in products:
+        product_id = product.get('id')
+        product_name = product.get('name', '')
+        product_price = product.get('sell_price', 0)
+        
+        if product_id is not None:
+            # Tugma matnini formatlash: Nomi (Narx: ... so'm)
+            expected_format = f"{product_name} ({product_price:,} so'm)"
+            
+            if product_text == expected_format:
+                selected_product = product
+                break
+    
+    if selected_product:
+        product_id = selected_product.get('id')
+        product_name = selected_product.get('name', 'Noma\'lum')
+        product_price = selected_product.get('sell_price', 0)
+        
+        # Tasdiqlash so'rash
+        await message.answer(
+            f"⚠️ {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n"
+            f"🎁 Mahsulot: {product_name}\n"
+            f"🆔 Mahsulot ID: {product_id}\n"
+            f"💰 Asl narxi: {product_price:,} so'm\n"
+            f"📦 Miqdor: 1 ta\n"
+            f"💸 Bonus statusi: Tekin (0 so'm)\n\n"
+            f"Haqiqatan ham bonus mahsulot qo'shmoqchimisiz?\n"
+            f"ℹ️ Bu mahsulot mijozga tekin sifatida beriladi.",
+            parse_mode="HTML",
+            reply_markup=get_confirmation_keyboard("add_bonus", order_id, product_id)
+        )
+        
+        await state.clear()
+    else:
+        # Agar mahsulot topilmasa, qayta mahsulotlar ro'yxatini ko'rsatish
+        keyboard = await get_bonus_products_keyboard()
+        if keyboard:
+            await message.answer(
+                "❌ Tanlangan mahsulot topilmadi. Iltimos, quyidagi mahsulotlardan birini tanlang:",
+                reply_markup=keyboard
+            )
+        else:
+            await message.answer(
+                "❌ Mahsulotlar ro'yxati mavjud emas. Iltimos, orqaga qayting.",
+                reply_markup=get_orders_keyboard()
+            )
+            await state.clear()
 
 # ============ NARXNI BLOKLASH ============
 
@@ -1266,7 +1487,7 @@ async def handle_confirm_update_price(callback_query: types.CallbackQuery):
 
 @courier_router.callback_query(F.data.startswith("confirm_add_bonus_"))
 async def handle_confirm_add_bonus(callback_query: types.CallbackQuery):
-    """Bonus mahsulot qo'shishni tasdiqlash"""
+    """Bonus mahsulot qo'shishni tasdiqlash - API ga POST so'rov yuborish"""
     data_parts = callback_query.data.split("_")
     order_id = int(data_parts[3])
     product_id = int(data_parts[4])
@@ -1276,31 +1497,83 @@ async def handle_confirm_add_bonus(callback_query: types.CallbackQuery):
     
     await callback_query.message.edit_text(f"⏳ Buyurtma #{order_id} ga bonus mahsulot qo'shilmoqda...")
     
-    success, result = await client.add_bonus_to_order(
-        order_id=order_id,
-        telegram_id=user_id,
-        product_id=product_id,
-        quantity=1
-    )
-    
-    if success:
-        bonus_message = (
-            f"✅ {hd.bold('BONUS MAHSULOT QO\'SHILDI')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n"
-            f"🎁 Mahsulot: ID #{product_id}\n"
-            f"📦 Miqdor: 1 ta\n"
-            f"💰 Status: Tekin (0 so'm)\n\n"
-            f"🎉 Mijozga quvonch bag'ishladingiz!"
+    # API ga POST so'rov yuborish
+    try:
+        # 1. Buyurtma holatini tekshirish
+        success, order_detail = await client.get_order_detail(order_id)
+        
+        if not success:
+            error_message = (
+                f"❌ {hd.bold('BUYURTMA TOPILMADI')}\n\n"
+                f"📦 Buyurtma: #{order_id}\n\n"
+                f"Buyurtma ma'lumotlari olinmadi."
+            )
+            await callback_query.message.edit_text(error_message, parse_mode="HTML")
+            return
+        
+        order_status = order_detail.get('status', '')
+        
+        if order_status != 'kuryerda':
+            error_message = (
+                f"❌ {hd.bold('BONUS QO\'SHISH MUMMKIN EMAS')}\n\n"
+                f"📦 Buyurtma: #{order_id}\n"
+                f"📊 Holat: {order_status.capitalize()}\n\n"
+                f"ℹ️ Faqat 'kuryerda' holatidagi buyurtmalarga bonus qo'shish mumkin.\n"
+                f"Joriy holat: {order_status}"
+            )
+            await callback_query.message.edit_text(error_message, parse_mode="HTML")
+            return
+        
+        # 2. Mahsulot ma'lumotlarini olish
+        success, products = await client._make_request("GET", "/products/")
+        
+        product_name = "Noma'lum mahsulot"
+        if success and isinstance(products, list):
+            for product in products:
+                if product.get('id') == product_id:
+                    product_name = product.get('name', 'Noma\'lum mahsulot')
+                    break
+        
+        # 3. API ga POST so'rov yuborish
+        success, result = await client.add_bonus_to_order(
+            order_id=order_id,
+            telegram_id=user_id,
+            product_id=product_id,
+            quantity=1
         )
-        await callback_query.message.edit_text(bonus_message, parse_mode="HTML")
-    else:
-        error_details = result.get('error', 'Noma\'lum xato') if isinstance(result, dict) else str(result)
+        
+        if success:
+            success_message = (
+                f"✅ {hd.bold('BONUS MAHSULOT MUVAFFAQIYATLI QO\'SHILDI')}\n\n"
+                f"📦 Buyurtma: #{order_id}\n"
+                f"🎁 Mahsulot: {product_name}\n"
+                f"🆔 Mahsulot ID: #{product_id}\n"
+                f"📦 Miqdor: 1 ta\n"
+                f"💰 Narx: 0 so'm (Tekin)\n\n"
+                f"ℹ️ Mijozga quvonch bag'ishladingiz!\n"
+                f"• Mahsulot mijozga tekin sifatida berildi\n"
+                f"• Ombor qoldig'i yangilandi\n"
+                f"• Buyurtma summasi o'zgarmadi"
+            )
+            await callback_query.message.edit_text(success_message, parse_mode="HTML")
+        else:
+            error_details = result.get('error', 'Noma\'lum xato') if isinstance(result, dict) else str(result)
+            error_message = (
+                f"❌ {hd.bold('BONUS MAHSULOT QO\'SHISH MUVAFFAQIYATSIZ')}\n\n"
+                f"📦 Buyurtma: #{order_id}\n"
+                f"🎁 Mahsulot ID: #{product_id}\n\n"
+                f"Xato: {error_details}\n\n"
+                f"ℹ️ Iltimos, qayta urinib ko'ring yoki admin bilan bog'lanishingiz kerak."
+            )
+            await callback_query.message.edit_text(error_message, parse_mode="HTML")
+            
+    except Exception as e:
+        logger.error(f"Bonus qo'shishda xatolik: {e}")
         error_message = (
-            f"❌ {hd.bold('BONUS MAHSULOT QO\'SHISH MUVAFFAQIYATSIZ')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n"
-            f"🎁 Mahsulot ID: #{product_id}\n\n"
-            f"Xato: {error_details}\n\n"
-            f"ℹ️ Iltimos, qayta urinib ko'ring yoki admin bilan bog'lanishingiz kerak."
+            f"❌ {hd.bold('XATOLIK YUZ BERDI')}\n\n"
+            f"📦 Buyurtma: #{order_id}\n\n"
+            f"Xato: {str(e)}\n\n"
+            f"Iltimos, keyinroq qayta urinib ko'ring."
         )
         await callback_query.message.edit_text(error_message, parse_mode="HTML")
 
@@ -1492,29 +1765,100 @@ async def handle_detail_order(callback_query: types.CallbackQuery):
 
 @courier_router.message(F.text == "📋 Zakazlarim tarixi")
 async def handle_order_history(message: types.Message, state: FSMContext):
-    """Buyurtmalar tarixi"""
+    """Buyurtmalar tarixi - API dan ma'lumot olish"""
     user_id = str(message.from_user.id)
     logger.info(f"📋 'Zakazlarim tarixi' - User: {user_id}")
     
-    # State dan kuryer ma'lumotlarini olish
-    state_data = await state.get_data()
+    await message.answer("⏳ Zakazlar tarixi yuklanmoqda...")
     
-    if state_data and 'courier_info' in state_data:
-        courier_info = state_data['courier_info']
-        courier_name = courier_info.get('name', 'Kuryer')
-    else:
-        courier_name = 'Kuryer'
+    # API dan kuryer tarixini olish
+    try:
+        # Oxirgi 30 kunlik ma'lumotlarni olish
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        
+        endpoint = f"/couriers/me/history/?telegram_id={user_id}&start_date={start_date}&end_date={end_date}"
+        success, history_data = await client._make_request("GET", endpoint)
+        
+        if success and isinstance(history_data, dict):
+            # API dan kelgan ma'lumotlarni olish
+            courier_id = history_data.get('courier_id', 0)
+            courier_name = history_data.get('courier_name', 'Kuryer')
+            total_delivered_orders = history_data.get('total_delivered_orders', 0)
+            total_items_sold = history_data.get('total_items_sold', 0)
+            total_money_collected = history_data.get('total_money_collected', 0)
+            average_rating = history_data.get('average_rating', 0)
+            
+            # Reytingni yulduzlarga aylantirish
+            rating_stars = '⭐' * int(average_rating) + '☆' * (5 - int(average_rating))
+            
+            # Tarix ma'lumotlarini formatlash
+            history_text = (
+                f"📋 {hd.bold(f'{courier_name} ZAKAZLAR TARIXI')}\n"
+                f"🆔 ID: #{courier_id}\n"
+                f"📅 Davr: {start_date} - {end_date}\n"
+                f"―――――――――――――――――――――\n\n"
+                
+                f"📊 {hd.bold('UMUMIY STATISTIKA:')}\n"
+                f"📦 Yetkazilgan zakazlar: {total_delivered_orders} ta\n"
+                f"🛍 Sotilgan mahsulotlar: {total_items_sold} ta\n"
+                f"💰 Jami daromad: {total_money_collected:,.0f} so'm\n"
+                f"⭐ O'rtacha reyting: {rating_stars} ({average_rating:.1f}/5.0)\n\n"
+            )
+            
+            # Har bir oy uchun alohida ma'lumotlar (agar mavjud bo'lsa)
+            history_items = history_data.get('history', [])
+            
+            if history_items and isinstance(history_items, list):
+                history_text += f"📈 {hd.bold('TAFSILIY TARIX:')}\n"
+                
+                # Oxirgi 10 ta yozuvni ko'rsatish
+                recent_history = history_items[:10]
+                
+                for i, item in enumerate(recent_history, 1):
+                    order_id = item.get('order_id', 0)
+                    order_date = item.get('date', 'Noma\'lum sana')
+                    order_total = item.get('total_amount', 0)
+                    items_count = item.get('items_count', 0)
+                    
+                    history_text += (
+                        f"{i}. 📅 {order_date} | "
+                        f"📦 #{order_id} | "
+                        f"💰 {order_total:,.0f} so'm | "
+                        f"🛍 {items_count} ta\n"
+                    )
+                
+                if len(history_items) > 10:
+                    history_text += f"\nℹ️ ... va yana {len(history_items) - 10} ta zakaz\n"
+            else:
+                history_text += f"ℹ️ Hozircha batafsil tarix ma'lumotlari mavjud emas.\n"
+            
+            history_text += (
+                f"\n―――――――――――――――――――――\n"
+                f"ℹ️ Ma'lumotlar oxirgi 30 kun uchun\n"
+                f"📊 Umumiy zakazlar: {total_delivered_orders} ta"
+            )
+            
+        else:
+            # Agar API dan ma'lumot olinmasa
+            error_message = "API dan ma'lumotlar olinmadi" if isinstance(history_data, str) else "Noma'lum xato"
+            
+            history_text = (
+                f"📋 {hd.bold('ZAKAZLAR TARIXI')}\n\n"
+                f"❌ {hd.bold('MA\'LUMOTLAR YUKLANMADI')}\n\n"
+                f"Xato: {error_message}\n\n"
+                f"ℹ️ Iltimos, keyinroq urinib ko'ring yoki admin bilan bog'lanishingiz kerak."
+            )
     
-    history_text = (
-        f"📋 {hd.bold(f'{courier_name} BUYURTMALAR TARIXI')}\n\n"
-        f"📊 {hd.bold('Umumiy statistika:')}\n"
-        f"• Jami buyurtmalar: 0 ta\n"
-        f"• Jami daromad: 0 so'm\n"
-        f"• O'rtacha reyting: 0/5.0\n\n"
-        f"―――――――――――――――――――――\n"
-        f"ℹ️ Batafsil tarix ma'lumotlari hozircha mavjud emas.\n"
-        f"Keyingi yangilanishlarda bu bo'lim kengaytiriladi."
-    )
+    except Exception as e:
+        logger.error(f"Zakazlar tarixini olishda xatolik: {e}")
+        
+        history_text = (
+            f"📋 {hd.bold('ZAKAZLAR TARIXI')}\n\n"
+            f"❌ {hd.bold('XATOLIK YUZ BERDI')}\n\n"
+            f"Xato: {str(e)}\n\n"
+            f"ℹ️ Iltimos, keyinroq qayta urinib ko'ring."
+        )
     
     await message.answer(history_text, parse_mode="HTML", reply_markup=get_main_keyboard())
 
@@ -1696,7 +2040,6 @@ async def handle_my_rating(message: types.Message):
             f"📊 {hd.bold('Umumiy reyting:')}\n"
             f"   {rating_stars}\n"
             f"   {average_rating:.1f}/5.0 ball\n\n"
-            f"👥 {hd.bold('Sharhlar:')} {reviews_count} ta\n"
             f"🏆 {hd.bold('Daraja:')} {rank}\n\n"
             f"📈 {hd.bold('Ish faolligi:')}\n"
             f"├ 📦 Yetkazilgan buyurtmalar: {total_delivered_orders} ta\n"
@@ -1717,7 +2060,6 @@ async def handle_my_rating(message: types.Message):
         error_message = (
             f"⭐ {hd.bold('MENING REYTINGIM')}\n\n"
             f"📊 {hd.bold('Umumiy reyting:')} ☆☆☆☆☆\n"
-            f"👥 {hd.bold('Sharhlar:')} 0 ta\n"
             f"🏆 {hd.bold('Daraja:')} Yangi kuryer\n\n"
             f"🎯 {hd.bold('Keyingi daraja:')} 4.0 reyting\n"
             f"📈 {hd.bold('Yetishmaslik:')} 4.0 ball\n\n"

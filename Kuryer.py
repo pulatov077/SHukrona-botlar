@@ -32,7 +32,7 @@ logger = logging.getLogger("Kuryer")
 logger.info("🚚 Kuryer moduli yuklandi")
 
 # ASOSIY API URL
-API_BASE_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
+API_BASE_URL = os.getenv("BACKEND_URL", "https://shukrona-backend-production-4169.up.railway.app")
 logger.info(f"🔧 Kuryer moduli uchun API URL: {API_BASE_URL}")
 
 # Bot tokenini environment variable dan olamiz yoki to'g'ridan yozamiz

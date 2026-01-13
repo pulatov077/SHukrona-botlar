@@ -36,7 +36,7 @@ API_BASE_URL = os.getenv("BACKEND_URL", "http://127.0.0.1:8000")
 logger.info(f"🔧 Kuryer moduli uchun API URL: {API_BASE_URL}")
 
 # Bot tokenini environment variable dan olamiz yoki to'g'ridan yozamiz
-BOT_TOKEN = "8372693619:AAEiSlEnmkUBpXu958yb9KmuSYs-jt3ZstU"
+BOT_TOKEN = "8372365010:AAHt8f69mdbHlcCY3yZP6rBvf36uMxcf9Dg"
 
 if not BOT_TOKEN:
     logger.error("❌ Iltimos, haqiqiy BOT_TOKEN ni kiriting!")

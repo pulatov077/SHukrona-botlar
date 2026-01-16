@@ -496,9 +496,9 @@ def format_report(report_data: Dict, report_type: str) -> str:
             f"📅 {hd.bold(period)}\n\n"
             f"📈 {hd.bold('KO\'RSATKICHLAR:')}\n"
             f"├ 📦 Yetkazilgan buyurtmalar: {total_deliveries} ta\n"
-            f"├ 🛍 Sotilgan mahsulotlar: {total_items_sold} ta\n"
+            f"├ 🛍 Sotilgan mahsulotlar(bachok): {total_items_sold} ta\n"
             f"├ 💰 Jami daromad: {total_money:,.0f} so'm\n"
-            f"└ ⭐ O'rtacha reyting: {rating_text}"
+            f"└ ⭐ Mening reytingim: {rating_text}"
         )
         
         return formatted
@@ -530,7 +530,7 @@ def format_rating_info(report_data: Dict) -> str:
             f"📊 {hd.bold('Umumiy reyting:')}\n"
             f"   {rating_text}\n\n"
             f"📦 {hd.bold('Yetkazilgan buyurtmalar:')} {total_delivered_orders} ta\n"
-            f"🛍 {hd.bold('Sotilgan mahsulotlar:')} {total_items_sold} ta\n"
+            f"🛍 {hd.bold('Sotilgan mahsulotlar(bachok):')} {total_items_sold} ta\n"
             f"💰 {hd.bold('Jami daromad:')} {total_money:,.0f} so'm"
         )
         

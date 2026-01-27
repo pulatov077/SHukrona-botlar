@@ -66,12 +66,16 @@ class CourierClient:
                 'Content-Type': 'application/json'
             })
             
+            # params ni qo'shish
+            params = kwargs.pop('params', None)
+            
             async with aiohttp.ClientSession() as session:
                 async with session.request(
                     method=method,
                     url=url,
                     timeout=timeout,
                     headers=headers,
+                    params=params,
                     **kwargs
                 ) as response:
                     
@@ -173,6 +177,22 @@ class CourierClient:
             
         except Exception as e:
             logger.error(f"❌ Buyurtma ma'lumotlarini olishda xatolik: {str(e)}")
+            return False, {"error": str(e)}
+    
+    # ============ MIJOZ STATISTIKASI ============
+    
+    async def get_user_order_stats(self, telegram_id: str, start_date: str, end_date: str) -> Tuple[bool, Optional[Dict]]:
+        try:
+            endpoint = f"/users/stats/orders/by-telegram/{telegram_id}/"
+            params = {"start_date": start_date, "end_date": end_date}
+            success, data = await self._make_request("GET", endpoint, params=params)
+            
+            if success:
+                return True, data
+            return False, {"error": "Statistika olinmadi"}
+            
+        except Exception as e:
+            logger.error(f"❌ Mijoz statistikasini olishda xatolik: {str(e)}")
             return False, {"error": str(e)}
     
     async def accept_order(self, order_id: int, telegram_id: str, delivery_time: str = "30 daqiqa") -> Tuple[bool, Optional[Dict]]:
@@ -410,10 +430,12 @@ def format_order_detail(order: Dict) -> str:
         created_at = order.get('created_at', 'Noma\'lum')
         is_price_locked = order.get('is_price_locked', False)
         
+        # Mijozning Telegram ID sini olish
+        user_telegram_id = order.get('user_telegram_id', None)
+        
         user_type_display = {
             'standard': '👤 Standart',
             'maxsus': '👑 Maxsus',
-            'vip': '⭐ VIP'
         }.get(user_type, f'👤 {user_type.capitalize()}')
         
         status_colors = {
@@ -452,11 +474,32 @@ def format_order_detail(order: Dict) -> str:
                 bonus_mark = "🎁 " if is_bonus else "  "
                 formatted += f"  {bonus_mark}• {product_name} - {quantity} x {price:,} so'm\n"
         
+        # Mijoz Telegram ID sini qo'shamiz (agar mavjud bo'lsa)
+        if user_telegram_id:
+            formatted += f"\n🆔 {hd.bold('Mijoz Telegram ID:')} {user_telegram_id}"
+        
         return formatted
         
     except Exception as e:
         logger.error(f"Buyurtma ma'lumotlarini formatlashda xatolik: {e}")
         return f"❌ Buyurtma ma'lumotlarini formatlashda xatolik"
+
+def format_user_stats(stats: Dict) -> str:
+    try:
+        orders_count = stats.get('orders_count', 0)
+        items_count = stats.get('items_count', 0)
+        
+        formatted = (
+            f"\n📊 {hd.bold('MIJOZ STATISTIKASI (SO\'NGI 30 KUN):')}\n"
+            f"├ 📦 {hd.bold('Buyurtmalar soni:')} {orders_count} ta\n"
+            f"└ 🛍 {hd.bold('Mahsulotlar soni:')} {items_count} ta"
+        )
+        
+        return formatted
+        
+    except Exception as e:
+        logger.error(f"Mijoz statistikasini formatlashda xatolik: {e}")
+        return ""
 
 def format_report(report_data: Dict, report_type: str) -> str:
     try:
@@ -1069,6 +1112,8 @@ async def handle_back_to_orders(callback_query: types.CallbackQuery):
     await callback_query.message.edit_text("🔙 Buyurtmalar ro'yxatiga qaytildi.")
     await callback_query.message.answer("📦 Buyurtmalar menyusi:", reply_markup=get_orders_keyboard())
 
+# ============ BATAFSIL BUYURTMA MA'LUMOTLARI ============
+
 @courier_router.callback_query(F.data.startswith("detail_order_"))
 async def handle_detail_order(callback_query: types.CallbackQuery):
     order_id = int(callback_query.data.replace("detail_order_", ""))
@@ -1079,7 +1124,23 @@ async def handle_detail_order(callback_query: types.CallbackQuery):
     success, order_detail = await client.get_order_detail(order_id)
     
     if success:
+        # Buyurtma asosiy ma'lumotlarini formatlash
         order_text = format_order_detail(order_detail)
+        
+        # Mijozning Telegram ID sini olish
+        user_telegram_id = order_detail.get('user_telegram_id')
+        
+        # Agar mijozning Telegram ID si mavjud bo'lsa, statistika olish
+        if user_telegram_id:
+            # So'nggi 30 kunlik statistikani olish
+            end_date = datetime.now().strftime('%Y-%m-%d')
+            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+            
+            stats_success, stats_data = await client.get_user_order_stats(user_telegram_id, start_date, end_date)
+            
+            if stats_success:
+                stats_text = format_user_stats(stats_data)
+                order_text += stats_text
         
         status = order_detail.get('status', '')
         is_price_locked = order_detail.get('is_price_locked', False)

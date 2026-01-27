@@ -2,7 +2,7 @@ import asyncio
 import os
 import logging
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 
 from aiogram import Bot, Dispatcher, types, F
@@ -127,6 +127,22 @@ async def rate_order_api(order_id: int, rating: int, comment: str):
             logger.error(f"API Error (rate): {e}")
             return None
 
+# --- STATISTIKA API ---
+async def get_order_stats_api(tg_id: str | int, start_date: str, end_date: str):
+    url = f"{BACKEND_URL}/users/stats/orders/by-telegram/{tg_id}/"
+    params = {"start_date": start_date, "end_date": end_date}
+    async with httpx.AsyncClient() as client:
+        try:
+            res = await client.get(url, params=params, timeout=10.0)
+            if res.status_code == 200:
+                return res.json()
+            else:
+                logger.error(f"Stats API Error: {res.status_code} - {res.text}")
+                return None
+        except Exception as e:
+            logger.error(f"API Error (get_order_stats): {e}")
+            return None
+
 # --- YORDAMCHI FUNKSIYALAR ---
 def format_price(price):
     try: return f"{int(price):,}".replace(",", " ")
@@ -148,7 +164,8 @@ def get_main_menu():
         keyboard=[
             [KeyboardButton(text="🛍 Yangi buyurtma")],
             [KeyboardButton(text="📦 Mening buyurtmalarim")],
-            [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="⚙️ Sozlamalar")]
+            [KeyboardButton(text="👤 Profilim"), KeyboardButton(text="⚙️ Sozlamalar")],
+            [KeyboardButton(text="📊 Statistika")]
         ], resize_keyboard=True
     )
 
@@ -173,6 +190,18 @@ def get_location_keyboard():
 
 def get_rating_keyboard(order_id):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]])
+
+# STATISTIKA KEYBOARD
+def get_stats_keyboard():
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                InlineKeyboardButton(text="📅 Haftalik", callback_data="stats_weekly"),
+                InlineKeyboardButton(text="📊 Oylik", callback_data="stats_monthly")
+            ],
+            [InlineKeyboardButton(text="❌ Yopish", callback_data="close_stats")]
+        ]
+    )
 
 # --- GLOBAL BEKOR QILISH ---
 @dp.message(F.text == "❌ Bekor qilish")
@@ -339,7 +368,6 @@ async def save_new_address(m: Message, state: FSMContext):
         await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
 
-
 # --- 4. 🛍 YANGI BUYURTMA ---
 @dp.message(F.text == "🛍 Yangi buyurtma")
 async def start_order(message: Message, state: FSMContext):
@@ -494,13 +522,9 @@ async def clear_basket(c: CallbackQuery, state: FSMContext):
     await c.message.answer("🗑 Savat tozalandi.", reply_markup=get_main_menu())
 
 # --- MANZIL TANLASH (MANTIQ VA UX) ---
-
 @dp.callback_query(F.data == "confirm_basket")
 async def ask_address_type(c: CallbackQuery, state: FSMContext):
     await c.message.delete()
-    
-    # UX uchun: Avval foydalanuvchini joriy manzilini eslatamiz
-    # Lekin API call qilmasdan tez ishlashi uchun umumiy so'raymiz
     
     kb = ReplyKeyboardMarkup(
         keyboard=[
@@ -563,7 +587,6 @@ async def create_order_final(message: Message, state: FSMContext):
     data = await state.get_data()
     basket = data.get('basket', [])
     
-    # Mantiq: Agar custom_location bo'lsa uni yuboramiz, bo'lmasa None (backend profilni oladi)
     custom_location = data.get('custom_location')
     
     items = [{"product_id": i['product_id'], "quantity": i['quantity']} for i in basket]
@@ -633,6 +656,69 @@ async def show_my_orders(msg_obj, tg_id, offset):
     if len(orders) == 5: nav.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"my_orders_{offset+5}"))
     if nav: await bot.send_message(tg_id, f"📄 Sahifa {offset//5 + 1}", reply_markup=InlineKeyboardMarkup(inline_keyboard=[nav]))
 
+# --- 6. 📊 STATISTIKA ---
+@dp.message(F.text == "📊 Statistika")
+async def show_stats_menu(message: Message):
+    await message.answer(
+        "📊 <b>Buyurtmalar statistikasi</b>\n\n"
+        "Qaysi davr uchun statistikani ko'rmoqchisiz?",
+        parse_mode="HTML",
+        reply_markup=get_stats_keyboard()
+    )
+
+@dp.callback_query(F.data == "close_stats")
+async def close_stats_handler(callback: CallbackQuery):
+    await callback.message.delete()
+    await callback.answer()
+
+@dp.callback_query(F.data == "stats_weekly")
+async def show_weekly_stats(callback: CallbackQuery):
+    await callback.answer("📅 Haftalik statistikangiz hisoblanmoqda...")
+    
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=7)
+    
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    
+    stats = await get_order_stats_api(callback.from_user.id, start_str, end_str)
+    
+    if stats:
+        text = (
+            f"📅 <b>Haftalik statistikangiz</b>\n"
+            f"({start_str} dan {end_str} gacha)\n\n"
+            f"🛍 <b>Buyurtmalar soni:</b> {stats.get('orders_count', 0)} ta\n"
+            f"📦 <b>Mahsulotlar soni:</b> {stats.get('items_count', 0)} ta"
+        )
+    else:
+        text = "❌ Statistika ma'lumotlarini olishda xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring."
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_stats_keyboard())
+
+@dp.callback_query(F.data == "stats_monthly")
+async def show_monthly_stats(callback: CallbackQuery):
+    await callback.answer("📊 Oylik statistikangiz hisoblanmoqda...")
+    
+    end_date = datetime.now()
+    start_date = end_date - timedelta(days=30)
+    
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    
+    stats = await get_order_stats_api(callback.from_user.id, start_str, end_str)
+    
+    if stats:
+        text = (
+            f"📊 <b>Oylik statistikangiz</b>\n"
+            f"({start_str} dan {end_str} gacha)\n\n"
+            f"🛍 <b>Buyurtmalar soni:</b> {stats.get('orders_count', 0)} ta\n"
+            f"📦 <b>Mahsulotlar soni:</b> {stats.get('items_count', 0)} ta"
+        )
+    else:
+        text = "❌ Statistika ma'lumotlarini olishda xatolik yuz berdi. Iltimos, keyinroq urinib ko'ring."
+    
+    await callback.message.edit_text(text, parse_mode="HTML", reply_markup=get_stats_keyboard())
+
 # --- BAHOLASH ---
 @dp.callback_query(F.data.startswith("start_rate_"))
 async def start_rate(c: CallbackQuery, state: FSMContext):
@@ -652,7 +738,6 @@ async def stars_sel(c: CallbackQuery, state: FSMContext):
     rating = int(c.data.split("_")[-1])
     await state.update_data(rating=rating)
     
-    # Xabarni tahrirlash (try-except bilan, xavfsizlik uchun)
     try:
         await c.message.edit_text(
             f"⭐️ <b>{rating} yulduz</b> tanladingiz.\n\n"
@@ -660,7 +745,6 @@ async def stars_sel(c: CallbackQuery, state: FSMContext):
             parse_mode="HTML"
         )
     except TelegramBadRequest:
-        # Agar rasm bo'lsa yoki edit qilib bo'lmasa yangi xabar yuboramiz
         await c.message.delete()
         await c.message.answer(f"⭐️ <b>{rating} yulduz</b> tanladingiz.\n\n✍️ Izohingizni yozib qoldiring:", parse_mode="HTML")
 

@@ -38,14 +38,15 @@ if not BOT_TOKEN:
     sys.exit(1)
 
 # ============================================================================
-# FSM HOLATLARI
+# FSM HOLATLARI (YANGI QO'SHILDI)
 # ============================================================================
 
 class CourierStates(StatesGroup):
     main_menu = State()
     waiting_for_delivery_time = State()
     waiting_for_new_price = State()
-    waiting_for_bonus_product = State()
+    waiting_for_bonus_product = State()          # bonus mahsulot tanlash
+    waiting_for_bonus_quantity = State()         # bonus miqdori (agar kerak bo'lsa)
 
 # ============================================================================
 # API CLIENT
@@ -66,7 +67,6 @@ class CourierClient:
                 'Content-Type': 'application/json'
             })
             
-            # params ni qo'shish
             params = kwargs.pop('params', None)
             
             async with aiohttp.ClientSession() as session:
@@ -285,7 +285,7 @@ class CourierClient:
             return False, None
 
 # ============================================================================
-# KLAVIATURALAR
+# KLAVIATURALAR (YANGI INLINE KLAVIATURALAR QO'SHILDI)
 # ============================================================================
 
 def get_main_keyboard() -> ReplyKeyboardMarkup:
@@ -319,27 +319,6 @@ def get_orders_keyboard() -> ReplyKeyboardMarkup:
     ]
     return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
 
-async def get_bonus_products_keyboard(client: CourierClient) -> Optional[ReplyKeyboardMarkup]:
-    try:
-        success, products = await client.get_products_list()
-        
-        if success and products:
-            keyboard = []
-            for product in products:
-                product_id = product.get('id', 0)
-                product_name = product.get('name', 'Noma\'lum')
-                button_text = f"{product_name} (ID: {product_id})"
-                keyboard.append([KeyboardButton(text=button_text)])
-            
-            keyboard.append([KeyboardButton(text="⬅️ Orqaga")])
-            return ReplyKeyboardMarkup(keyboard=keyboard, resize_keyboard=True)
-        
-        return None
-            
-    except Exception as e:
-        logger.error(f"Bonus mahsulotlar klaviaturasini yaratishda xatolik: {e}")
-        return None
-
 def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked: bool = False) -> InlineKeyboardMarkup:
     keyboard = InlineKeyboardMarkup(inline_keyboard=[])
     
@@ -350,7 +329,7 @@ def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked
         ])
     elif order_status in ["qabul_qilindi", "yetkazilmoqda", "kuryerda"]:
         keyboard.inline_keyboard.append([
-            InlineKeyboardButton(text="🚚 Yetkazildi", callback_data=f"deliver_order_{order_id}")
+            InlineKeyboardButton(text="🚚 Yetkazish", callback_data=f"deliver_order_{order_id}")
         ])
     
     keyboard.inline_keyboard.append([
@@ -360,35 +339,21 @@ def get_order_actions_keyboard(order_id: int, order_status: str, is_price_locked
     return keyboard
 
 def get_delivery_actions_keyboard(order_id: int, is_price_locked: bool = False, order_status: str = "yetkazilmoqda") -> InlineKeyboardMarkup:
-    if is_price_locked:
-        return InlineKeyboardMarkup(inline_keyboard=[
-            [
-                InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
-                InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
-            ]
+    # Bu funksiya endi inline menyuni qaytaradi, alohida xabar emas
+    buttons = []
+    if not is_price_locked and order_status in ["kuryerda", "yetkazilmoqda"]:
+        buttons.append([
+            InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"update_price_{order_id}"),
+            InlineKeyboardButton(text="🎁 Bonus qo'shish", callback_data=f"add_bonus_{order_id}")
         ])
-    else:
-        if order_status in ["kuryerda", "yetkazilmoqda"]:
-            return InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="💰 Narxni o'zgartirish", callback_data=f"update_price_{order_id}"),
-                    InlineKeyboardButton(text="🎁 Bonus qo'shish", callback_data=f"add_bonus_{order_id}")
-                ],
-                [
-                    InlineKeyboardButton(text="🔒 Narxni bloklash", callback_data=f"lock_price_{order_id}")
-                ],
-                [
-                    InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
-                    InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
-                ]
-            ])
-        else:
-            return InlineKeyboardMarkup(inline_keyboard=[
-                [
-                    InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
-                    InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
-                ]
-            ])
+        buttons.append([
+            InlineKeyboardButton(text="🔒 Narxni bloklash", callback_data=f"lock_price_{order_id}")
+        ])
+    buttons.append([
+        InlineKeyboardButton(text="✅ Yakunlash", callback_data=f"confirm_delivery_{order_id}"),
+        InlineKeyboardButton(text="🔙 Orqaga", callback_data=f"back_to_orders_{order_id}")
+    ])
+    return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 def get_confirmation_keyboard(action: str, order_id: int, data: Any = None) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[
@@ -398,11 +363,33 @@ def get_confirmation_keyboard(action: str, order_id: int, data: Any = None) -> I
         ]
     ])
 
+def get_products_inline_keyboard(products: List[Dict], order_id: int) -> InlineKeyboardMarkup:
+    """Mahsulotlar ro'yxatini inline tugmalar shaklida qaytaradi"""
+    keyboard = []
+    row = []
+    for product in products:
+        product_id = product.get('id')
+        product_name = product.get('name', 'Noma\'lum')
+        btn = InlineKeyboardButton(
+            text=f"{product_name}",
+            callback_data=f"select_bonus_product_{order_id}_{product_id}"
+        )
+        row.append(btn)
+        if len(row) == 2:
+            keyboard.append(row)
+            row = []
+    if row:
+        keyboard.append(row)
+    # Bekor qilish tugmasi
+    keyboard.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"cancel_bonus_{order_id}")])
+    return InlineKeyboardMarkup(inline_keyboard=keyboard)
+
 # ============================================================================
-# YORDAMCHI FUNKSIYALAR
+# YORDAMCHI FUNKSIYALAR (o'zgarmagan)
 # ============================================================================
 
 def format_courier_welcome(check_data: Dict) -> str:
+    # ... avvalgidek ...
     try:
         courier_name = check_data.get('courier_name', 'Kuryer')
         
@@ -418,6 +405,7 @@ def format_courier_welcome(check_data: Dict) -> str:
         return f"🚚 {hd.bold('KURYER PANELIGA XUSH KELIBSIZ!')}"
 
 def format_order_detail(order: Dict) -> str:
+    # ... avvalgidek ...
     try:
         order_id = order.get('id', 0)
         status = order.get('status', 'Noma\'lum')
@@ -430,7 +418,6 @@ def format_order_detail(order: Dict) -> str:
         created_at = order.get('created_at', 'Noma\'lum')
         is_price_locked = order.get('is_price_locked', False)
         
-        # Mijozning Telegram ID sini olish
         user_telegram_id = order.get('user_telegram_id', None)
         
         user_type_display = {
@@ -474,7 +461,6 @@ def format_order_detail(order: Dict) -> str:
                 bonus_mark = "🎁 " if is_bonus else "  "
                 formatted += f"  {bonus_mark}• {product_name} - {quantity} x {price:,} so'm\n"
         
-        # Mijoz Telegram ID sini qo'shamiz (agar mavjud bo'lsa)
         if user_telegram_id:
             formatted += f"\n🆔 {hd.bold('Mijoz Telegram ID:')} {user_telegram_id}"
         
@@ -485,6 +471,7 @@ def format_order_detail(order: Dict) -> str:
         return f"❌ Buyurtma ma'lumotlarini formatlashda xatolik"
 
 def format_user_stats(stats: Dict) -> str:
+    # ... avvalgidek ...
     try:
         orders_count = stats.get('orders_count', 0)
         items_count = stats.get('items_count', 0)
@@ -502,6 +489,7 @@ def format_user_stats(stats: Dict) -> str:
         return ""
 
 def format_report(report_data: Dict, report_type: str) -> str:
+    # ... avvalgidek ...
     try:
         courier_name = report_data.get('courier_name', 'Kuryer')
         total_deliveries = report_data.get('total_delivered_orders', 0)
@@ -526,7 +514,6 @@ def format_report(report_data: Dict, report_type: str) -> str:
             title = "HISOBOT"
             period = ""
         
-        # Ratingni to'g'ri formatlash
         try:
             rating_float = float(rating)
             rating_text = f"{rating_float:.1f}/5.0"
@@ -551,6 +538,7 @@ def format_report(report_data: Dict, report_type: str) -> str:
         return f"❌ Hisobot formatlashda xatolik"
 
 def format_rating_info(report_data: Dict) -> str:
+    # ... avvalgidek ...
     try:
         courier_name = report_data.get('courier_name', 'Kuryer')
         average_rating = report_data.get('average_rating', 0)
@@ -558,7 +546,6 @@ def format_rating_info(report_data: Dict) -> str:
         total_items_sold = report_data.get('total_items_sold', 0)
         total_money = report_data.get('total_money_collected', 0)
         
-        # Ratingni to'g'ri formatlash
         try:
             rating_float = float(average_rating)
             stars = '⭐' * int(rating_float) + '☆' * (5 - int(rating_float))
@@ -590,7 +577,7 @@ def format_rating_info(report_data: Dict) -> str:
 courier_router = Router()
 client = CourierClient(API_BASE_URL)
 
-# ============ START HANDLER ============
+# ============ START HANDLER (o'zgarmagan) ============
 
 @courier_router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
@@ -630,7 +617,7 @@ async def cmd_start(message: types.Message, state: FSMContext):
         await message.answer(error_message, parse_mode="HTML")
         await state.clear()
 
-# ============ BUYURTMALAR BO'LIMI ============
+# ============ BUYURTMALAR BO'LIMI (o'zgarmagan) ============
 
 @courier_router.message(F.text == "📦 Buyurtmalar")
 async def handle_orders_menu(message: types.Message):
@@ -723,7 +710,7 @@ async def handle_delivered_orders(message: types.Message):
 async def handle_cancelled_orders(message: types.Message):
     await show_orders_by_status(message, "bekor_qilindi", "Bekor qilingan")
 
-# ============ BUYURTMA AMALLARI ============
+# ============ BUYURTMA AMALLARI (O'ZGARTIRILGAN) ============
 
 @courier_router.callback_query(F.data.startswith("accept_order_"))
 async def handle_accept_order(callback_query: types.CallbackQuery, state: FSMContext):
@@ -732,7 +719,8 @@ async def handle_accept_order(callback_query: types.CallbackQuery, state: FSMCon
     
     await callback_query.answer()
     
-    await callback_query.message.answer(
+    # Xabarni tahrirlab, yetkazish vaqtini so'raymiz
+    await callback_query.message.edit_text(
         f"⏳ {hd.bold('YETKAZISH VAQTINI KIRITING')}\n\n"
         f"Buyurtma: #{order_id}\n\n"
         f"Iltimos, yetkazish vaqtini kiriting (masalan: '30 daqiqa', '1 soat'):",
@@ -780,7 +768,7 @@ async def handle_reject_order(callback_query: types.CallbackQuery):
         parse_mode="HTML"
     )
 
-# ============ NARXNI O'ZGARTIRISH ============
+# ============ NARXNI O'ZGARTIRISH (O'ZGARTIRILGAN) ============
 
 @courier_router.callback_query(F.data.startswith("update_price_"))
 async def handle_update_price(callback_query: types.CallbackQuery, state: FSMContext):
@@ -794,7 +782,8 @@ async def handle_update_price(callback_query: types.CallbackQuery, state: FSMCon
     if success:
         current_price = order_detail.get('total_amount', 0)
         
-        await callback_query.message.answer(
+        # Xabarni tahrirlab, yangi narxni so'raymiz
+        await callback_query.message.edit_text(
             f"💰 {hd.bold('NARXNI O\'ZGARTIRISH')}\n\n"
             f"📦 Buyurtma: #{order_id}\n"
             f"💵 Joriy narx: {current_price:,} so'm\n\n"
@@ -803,7 +792,7 @@ async def handle_update_price(callback_query: types.CallbackQuery, state: FSMCon
         )
         
         await state.set_state(CourierStates.waiting_for_new_price)
-        await state.update_data(order_id=order_id, user_id=user_id, current_price=current_price)
+        await state.update_data(order_id=order_id, user_id=user_id, current_price=current_price, original_message=callback_query.message)
     else:
         error_details = order_detail.get('error', 'Noma\'lum xato') if isinstance(order_detail, dict) else str(order_detail)
         await callback_query.message.answer(f"❌ Xato: {error_details}", parse_mode="HTML")
@@ -817,27 +806,39 @@ async def handle_new_price_input(message: types.Message, state: FSMContext):
         order_id = state_data.get('order_id')
         user_id = state_data.get('user_id')
         current_price = state_data.get('current_price', 0)
+        original_message = state_data.get('original_message')
         
         if new_price <= 0:
             await message.answer("❌ Narx 0 dan katta bo'lishi kerak.")
             return
         
-        await message.answer(
-            f"⚠️ {hd.bold('NARXNI O\'ZGARTIRISH')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n"
-            f"💵 Oldingi narx: {current_price:,} so'm\n"
-            f"💰 Yangi narx: {new_price:,} so'm\n\n"
-            f"Haqiqatan ham narxni o'zgartirmoqchimisiz?",
-            parse_mode="HTML",
-            reply_markup=get_confirmation_keyboard("update_price", order_id, new_price)
-        )
+        # Narxni o'zgartirish uchun so'rov yuborish
+        success, result = await client.update_order_price(order_id, user_id, new_price)
+        
+        if success:
+            result_text = f"✅ Narx muvaffaqiyatli o'zgartirildi!\nYangi narx: {new_price:,} so'm"
+        else:
+            error_details = result.get('error', 'Noma\'lum xato') if isinstance(result, dict) else str(result)
+            result_text = f"❌ Xato: {error_details}"
+        
+        # Foydalanuvchiga natijani yangi xabar sifatida yuboramiz
+        await message.answer(result_text, parse_mode="HTML")
+        
+        # Agar original xabar saqlangan bo'lsa, uni qayta tiklash (masalan, asl buyurtma ma'lumotlari)
+        if original_message:
+            # Bu yerda original xabarni qayta yuklash yoki yangilash mumkin
+            # Hozircha oddiygina yangilangan ma'lumotni ko'rsatamiz
+            success, updated_order = await client.get_order_detail(order_id)
+            if success:
+                order_text = format_order_detail(updated_order)
+                await message.answer(order_text, parse_mode="HTML")
         
         await state.clear()
         
     except ValueError:
         await message.answer("❌ Iltimos, to'g'ri raqam kiriting.")
 
-# ============ BONUS QO'SHISH ============
+# ============ BONUS QO'SHISH (O'ZGARTIRILGAN) ============
 
 @courier_router.callback_query(F.data.startswith("add_bonus_"))
 async def handle_add_bonus(callback_query: types.CallbackQuery, state: FSMContext):
@@ -849,154 +850,89 @@ async def handle_add_bonus(callback_query: types.CallbackQuery, state: FSMContex
     success, order_detail = await client.get_order_detail(order_id)
     
     if not success:
-        await callback_query.message.answer("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
+        await callback_query.message.edit_text("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
         return
     
     order_status = order_detail.get('status', '')
     
     if order_status != 'kuryerda':
-        await callback_query.message.answer(
+        await callback_query.message.edit_text(
             f"❌ {hd.bold('BONUS QO\'SHISH MUMMKIN EMAS')}\n\n"
             f"Faqat 'kuryerda' holatidagi buyurtmalarga bonus qo'shish mumkin.",
             parse_mode="HTML"
         )
         return
     
-    keyboard = await get_bonus_products_keyboard(client)
+    success, products = await client.get_products_list()
     
-    if keyboard:
-        await callback_query.message.answer(
-            f"🎁 {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n\n"
-            f"Quyidagi mahsulotlardan bonus tanlang:",
+    if success and products:
+        # Xabarni tahrirlab, mahsulotlar ro'yxatini inline tugmalarda ko'rsatamiz
+        keyboard = get_products_inline_keyboard(products, order_id)
+        await callback_query.message.edit_text(
+            f"🎁 {hd.bold('BONUS MAHSULOT TANLANG')}\n\n"
+            f"📦 Buyurtma: #{order_id}",
             parse_mode="HTML",
             reply_markup=keyboard
         )
-        
-        await state.set_state(CourierStates.waiting_for_bonus_product)
+        # Holatni saqlaymiz (keyingi bosqichda product tanlash uchun)
         await state.update_data(order_id=order_id, user_id=user_id)
+        # Holatni o'zgartirmaymiz, chunki keyingi qadam callback orqali keladi
     else:
-        await callback_query.message.answer(
+        await callback_query.message.edit_text(
             "❌ Mahsulotlar ro'yxati mavjud emas.",
             parse_mode="HTML"
         )
 
-@courier_router.message(CourierStates.waiting_for_bonus_product)
-async def handle_bonus_product_selection(message: types.Message, state: FSMContext):
-    product_text = message.text
-    state_data = await state.get_data()
+@courier_router.callback_query(F.data.startswith("select_bonus_product_"))
+async def handle_select_bonus_product(callback_query: types.CallbackQuery, state: FSMContext):
+    # Callback data: select_bonus_product_{order_id}_{product_id}
+    parts = callback_query.data.split("_")
+    order_id = int(parts[3])
+    product_id = int(parts[4])
     
-    order_id = state_data.get('order_id')
-    user_id = state_data.get('user_id')
-    
-    if not order_id or not user_id:
-        await message.answer("❌ Xatolik: Ma'lumotlar topilmadi.", reply_markup=get_main_keyboard())
-        await state.clear()
-        return
-    
-    if product_text == "⬅️ Orqaga":
-        await message.answer("🔙 Orqaga qaytildi.", reply_markup=get_orders_keyboard())
-        await state.clear()
-        return
-    
-    # Matndan ID ni ajratib olish
-    product_id = None
-    try:
-        # "Mahsulot nomi (ID: 1)" formatidan ID ni olish
-        match = re.search(r'\(ID:\s*(\d+)\)', product_text)
-        if match:
-            product_id = int(match.group(1))
-        else:
-            # Faqat raqamni ham tekshirish
-            match = re.search(r'(\d+)', product_text)
-            if match:
-                product_id = int(match.group(1))
-    except Exception as e:
-        logger.error(f"ID ajratishda xatolik: {e}")
-    
-    if not product_id:
-        await message.answer("❌ Mahsulot ID sini aniqlab bo'lmadi. Iltimos, 'Mahsulot nomi (ID: 1)' formatida kiriting.", parse_mode="HTML")
-        return
+    await callback_query.answer()
     
     # Mahsulot ma'lumotlarini olish
     success, products = await client.get_products_list()
+    selected_product = None
+    if success:
+        for p in products:
+            if p.get('id') == product_id:
+                selected_product = p
+                break
     
-    if not success or not products:
-        await message.answer("❌ Mahsulotlar ro'yxati olinmadi.", reply_markup=get_orders_keyboard())
-        await state.clear()
+    if not selected_product:
+        await callback_query.message.edit_text("❌ Mahsulot topilmadi.", parse_mode="HTML")
         return
     
-    selected_product = None
+    product_name = selected_product.get('name', 'Noma\'lum')
+    product_price = selected_product.get('sell_price', 0)
     
-    for product in products:
-        if product.get('id') == product_id:
-            selected_product = product
-            break
-    
-    if selected_product:
-        product_id = selected_product.get('id')
-        product_name = selected_product.get('name', 'Noma\'lum')
-        product_price = selected_product.get('sell_price', 0)
-        
-        await message.answer(
-            f"⚠️ {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n"
-            f"🎁 Mahsulot: {product_name}\n"
-            f"💰 Asl narxi: {product_price:,} so'm\n\n"
-            f"Haqiqatan ham bonus mahsulot qo'shmoqchimisiz?",
-            parse_mode="HTML",
-            reply_markup=get_confirmation_keyboard("add_bonus", order_id, product_id)
-        )
-        
-        await state.clear()
-    else:
-        keyboard = await get_bonus_products_keyboard(client)
-        if keyboard:
-            await message.answer(f"❌ ID: {product_id} bo'yicha mahsulot topilmadi.", reply_markup=keyboard)
-        else:
-            await message.answer("❌ Mahsulotlar ro'yxati mavjud emas.", reply_markup=get_orders_keyboard())
-            await state.clear()
-
-# ============ NARXNI BLOKLASH ============
-
-@courier_router.callback_query(F.data.startswith("lock_price_"))
-async def handle_lock_price(callback_query: types.CallbackQuery):
-    order_id = int(callback_query.data.replace("lock_price_", ""))
-    
-    await callback_query.answer()
-    
-    await callback_query.message.answer(
-        f"⚠️ {hd.bold('NARXNI BLOKLASH')}\n\n"
-        f"📦 Buyurtma: #{order_id}\n\n"
-        f"Buyurtma narxini bloklamoqchimisiz?",
+    # Xabarni tahrirlab, tasdiqlash so'raymiz
+    await callback_query.message.edit_text(
+        f"⚠️ {hd.bold('BONUS MAHSULOT QO\'SHISH')}\n\n"
+        f"📦 Buyurtma: #{order_id}\n"
+        f"🎁 Mahsulot: {product_name}\n"
+        f"💰 Asl narxi: {product_price:,} so'm\n\n"
+        f"Haqiqatan ham bonus mahsulot qo'shmoqchimisiz?",
         parse_mode="HTML",
-        reply_markup=get_confirmation_keyboard("lock_price", order_id)
+        reply_markup=get_confirmation_keyboard("add_bonus", order_id, product_id)
     )
 
-# ============ TASDIQLASH HANDLERLARI ============
-
-@courier_router.callback_query(F.data.startswith("confirm_update_price_"))
-async def handle_confirm_update_price(callback_query: types.CallbackQuery):
-    data_parts = callback_query.data.split("_")
-    order_id = int(data_parts[3])
-    new_price = float(data_parts[4])
-    user_id = str(callback_query.from_user.id)
-    
+@courier_router.callback_query(F.data.startswith("cancel_bonus_"))
+async def handle_cancel_bonus(callback_query: types.CallbackQuery):
+    order_id = int(callback_query.data.replace("cancel_bonus_", ""))
     await callback_query.answer()
-    await callback_query.message.edit_text(f"⏳ Buyurtma #{order_id} narxi o'zgartirilmoqda...")
-    
-    success, result = await client.update_order_price(order_id, user_id, new_price)
-    
+    # Bonus tanlashni bekor qilish - asl buyurtma ma'lumotlariga qaytish
+    success, order_detail = await client.get_order_detail(order_id)
     if success:
-        await callback_query.message.edit_text(
-            f"✅ {hd.bold('NARX MUVAFFAQIYATLI O\'ZGARTIRILDI')}\n\n"
-            f"📦 Buyurtma: #{order_id}\n"
-            f"💰 Yangi narx: {new_price:,} so'm",
-            parse_mode="HTML"
-        )
+        order_text = format_order_detail(order_detail)
+        status = order_detail.get('status', '')
+        is_price_locked = order_detail.get('is_price_locked', False)
+        keyboard = get_order_actions_keyboard(order_id, status, is_price_locked)
+        await callback_query.message.edit_text(order_text, parse_mode="HTML", reply_markup=keyboard)
     else:
-        error_details = result.get('error', 'Noma\'lum xato') if isinstance(result, dict) else str(result)
-        await callback_query.message.edit_text(f"❌ Xato: {error_details}", parse_mode="HTML")
+        await callback_query.message.edit_text("❌ Xatolik yuz berdi.", parse_mode="HTML")
 
 @courier_router.callback_query(F.data.startswith("confirm_add_bonus_"))
 async def handle_confirm_add_bonus(callback_query: types.CallbackQuery):
@@ -1021,6 +957,23 @@ async def handle_confirm_add_bonus(callback_query: types.CallbackQuery):
         error_details = result.get('error', 'Noma\'lum xato') if isinstance(result, dict) else str(result)
         await callback_query.message.edit_text(f"❌ Xato: {error_details}", parse_mode="HTML")
 
+# ============ NARXNI BLOKLASH (O'ZGARTIRILGAN) ============
+
+@courier_router.callback_query(F.data.startswith("lock_price_"))
+async def handle_lock_price(callback_query: types.CallbackQuery):
+    order_id = int(callback_query.data.replace("lock_price_", ""))
+    
+    await callback_query.answer()
+    
+    # Xabarni tahrirlab, tasdiqlash so'raymiz
+    await callback_query.message.edit_text(
+        f"⚠️ {hd.bold('NARXNI BLOKLASH')}\n\n"
+        f"📦 Buyurtma: #{order_id}\n\n"
+        f"Buyurtma narxini bloklamoqchimisiz?",
+        parse_mode="HTML",
+        reply_markup=get_confirmation_keyboard("lock_price", order_id)
+    )
+
 @courier_router.callback_query(F.data.startswith("confirm_lock_price_"))
 async def handle_confirm_lock_price(callback_query: types.CallbackQuery):
     order_id = int(callback_query.data.split("_")[3])
@@ -1043,10 +996,25 @@ async def handle_confirm_lock_price(callback_query: types.CallbackQuery):
 
 @courier_router.callback_query(F.data.startswith("cancel_"))
 async def handle_cancel_action(callback_query: types.CallbackQuery):
+    # Bekor qilish tugmasi bosilganda, asl buyurtma ma'lumotlariga qaytamiz
+    # Callback data: cancel_{action}_{order_id}
+    parts = callback_query.data.split("_")
+    action = parts[1]
+    order_id = int(parts[2])
+    
     await callback_query.answer("❌ Bekor qilindi")
-    await callback_query.message.edit_text("❌ Amal bekor qilindi.", parse_mode="HTML")
+    
+    success, order_detail = await client.get_order_detail(order_id)
+    if success:
+        order_text = format_order_detail(order_detail)
+        status = order_detail.get('status', '')
+        is_price_locked = order_detail.get('is_price_locked', False)
+        keyboard = get_order_actions_keyboard(order_id, status, is_price_locked)
+        await callback_query.message.edit_text(order_text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await callback_query.message.edit_text("❌ Xatolik yuz berdi.", parse_mode="HTML")
 
-# ============ YETKAZISH AMALLARI ============
+# ============ YETKAZISH AMALLARI (O'ZGARTIRILGAN) ============
 
 @courier_router.callback_query(F.data.startswith("deliver_order_"))
 async def handle_deliver_order(callback_query: types.CallbackQuery):
@@ -1057,13 +1025,14 @@ async def handle_deliver_order(callback_query: types.CallbackQuery):
     success, order_detail = await client.get_order_detail(order_id)
     
     if not success:
-        await callback_query.message.answer("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
+        await callback_query.message.edit_text("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
         return
     
     is_price_locked = order_detail.get('is_price_locked', False)
     order_status = order_detail.get('status', '')
     
-    await callback_query.message.answer(
+    # Xabarni tahrirlab, yetkazish amallari menyusini ko'rsatamiz
+    await callback_query.message.edit_text(
         f"🔄 {hd.bold('KEYINGI AMALNI TANLANG')}\n\n"
         f"📦 Buyurtma: #{order_id}\n"
         f"📊 Holat: {order_status.capitalize()}",
@@ -1081,11 +1050,11 @@ async def handle_confirm_delivery(callback_query: types.CallbackQuery):
     success, order_detail = await client.get_order_detail(order_id)
     
     if not success:
-        await callback_query.message.answer("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
+        await callback_query.message.edit_text("❌ Buyurtma ma'lumotlari olinmadi.", parse_mode="HTML")
         return
     
     if not order_detail.get('is_price_locked', False):
-        await callback_query.message.answer(
+        await callback_query.message.edit_text(
             f"❌ {hd.bold('NARX BLOKLANMAGAN')}\n\n"
             f"Avval narxni bloklang.",
             parse_mode="HTML"
@@ -1108,11 +1077,20 @@ async def handle_confirm_delivery(callback_query: types.CallbackQuery):
 
 @courier_router.callback_query(F.data.startswith("back_to_orders_"))
 async def handle_back_to_orders(callback_query: types.CallbackQuery):
+    order_id = int(callback_query.data.replace("back_to_orders_", ""))
     await callback_query.answer()
-    await callback_query.message.edit_text("🔙 Buyurtmalar ro'yxatiga qaytildi.")
-    await callback_query.message.answer("📦 Buyurtmalar menyusi:", reply_markup=get_orders_keyboard())
+    
+    success, order_detail = await client.get_order_detail(order_id)
+    if success:
+        order_text = format_order_detail(order_detail)
+        status = order_detail.get('status', '')
+        is_price_locked = order_detail.get('is_price_locked', False)
+        keyboard = get_order_actions_keyboard(order_id, status, is_price_locked)
+        await callback_query.message.edit_text(order_text, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        await callback_query.message.edit_text("❌ Xatolik yuz berdi.", parse_mode="HTML")
 
-# ============ BATAFSIL BUYURTMA MA'LUMOTLARI ============
+# ============ BATAFSIL BUYURTMA MA'LUMOTLARI (o'zgarmagan) ============
 
 @courier_router.callback_query(F.data.startswith("detail_order_"))
 async def handle_detail_order(callback_query: types.CallbackQuery):
@@ -1124,15 +1102,10 @@ async def handle_detail_order(callback_query: types.CallbackQuery):
     success, order_detail = await client.get_order_detail(order_id)
     
     if success:
-        # Buyurtma asosiy ma'lumotlarini formatlash
         order_text = format_order_detail(order_detail)
         
-        # Mijozning Telegram ID sini olish
         user_telegram_id = order_detail.get('user_telegram_id')
-        
-        # Agar mijozning Telegram ID si mavjud bo'lsa, statistika olish
         if user_telegram_id:
-            # So'nggi 30 kunlik statistikani olish
             end_date = datetime.now().strftime('%Y-%m-%d')
             start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
             
@@ -1151,7 +1124,7 @@ async def handle_detail_order(callback_query: types.CallbackQuery):
         error_details = order_detail.get('error', 'Noma\'lum xato') if isinstance(order_detail, dict) else str(order_detail)
         await callback_query.message.answer(f"❌ Xato: {error_details}", parse_mode="HTML")
 
-# ============ QOLGAN HANDLERLAR ============
+# ============ QOLGAN HANDLERLAR (o'zgarmagan) ============
 
 @courier_router.message(F.text == "📋 Zakazlarim tarixi")
 async def handle_order_history(message: types.Message):

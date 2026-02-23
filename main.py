@@ -9,10 +9,9 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import (
-    Message, 
-    ReplyKeyboardMarkup, 
-    KeyboardButton, 
-    MenuButtonDefault,
+    Message,
+    ReplyKeyboardMarkup,
+    KeyboardButton,
     ReplyKeyboardRemove,
     InlineKeyboardMarkup,
     InlineKeyboardButton,
@@ -48,7 +47,7 @@ async def get_pending_orders(admin_tg_id: int, limit: int = 5, offset: int = 0):
         "offset": offset
     }
     headers = {"X-Telegram-ID": str(admin_tg_id)}
-    
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.get(url, params=params, headers=headers, timeout=10.0)
@@ -99,16 +98,16 @@ def get_main_keyboard():
 def get_pagination_keyboard(offset: int, orders_count: int, limit: int = 5):
     buttons = []
     nav_row = []
-    
+
     if offset > 0:
         nav_row.append(InlineKeyboardButton(text="⬅️ Oldingi", callback_data=f"pending_page_{offset - limit}"))
-    
-    if orders_count == limit: # Agar kelgan ma'lumot limitga teng bo'lsa, demak yana bo'lishi mumkin
+
+    if orders_count == limit:  # Agar kelgan ma'lumot limitga teng bo'lsa, demak yana bo'lishi mumkin
         nav_row.append(InlineKeyboardButton(text="Keyingi ➡️", callback_data=f"pending_page_{offset + limit}"))
-    
+
     if nav_row:
         buttons.append(nav_row)
-    
+
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
 # --- BOT HANDLERS ---
@@ -132,7 +131,7 @@ async def process_password(message: Message, state: FSMContext):
     password = message.text
     telegram_id = str(message.from_user.id)
     login_url = f"{BACKEND_URL}/admin/login/"
-    
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(login_url, json={"telegram_id": telegram_id, "password": password}, timeout=10.0)
@@ -148,7 +147,17 @@ async def process_password(message: Message, state: FSMContext):
 
 async def send_pending_orders(message_or_query, admin_id: int, offset: int = 0):
     orders = await get_pending_orders(admin_id, offset=offset)
-    
+
+    # Agar backend takroriy buyurtmalar qaytarsa, ularni filtrlaymiz
+    seen_ids = set()
+    unique_orders = []
+    for o in orders:
+        oid = o.get('id')
+        if oid not in seen_ids:
+            seen_ids.add(oid)
+            unique_orders.append(o)
+    orders = unique_orders
+
     if not orders and offset == 0:
         text = "Hozircha biriktirilmagan buyurtmalar yo'q. ✨"
         if isinstance(message_or_query, Message):
@@ -157,10 +166,11 @@ async def send_pending_orders(message_or_query, admin_id: int, offset: int = 0):
             await message_or_query.message.edit_text(text)
         return
 
-    # Agar bu yangi xabar bo'lsa
+    # Agar bu yangi xabar bo'lsa, sarlavha chiqaramiz
     if isinstance(message_or_query, Message):
         await message_or_query.answer("🔍 Biriktirilmagan buyurtmalar ro'yxati:")
-    
+
+    # Har bir buyurtma uchun alohida xabar
     for o in orders:
         card = (
             f"📦 <b>Buyurtma #{o['id']}</b>\n"
@@ -174,7 +184,7 @@ async def send_pending_orders(message_or_query, admin_id: int, offset: int = 0):
         ])
         await bot.send_message(chat_id=admin_id, text=card, reply_markup=kb, parse_mode="HTML")
 
-    # Paginatsiya tugmasi
+    # Paginatsiya tugmasi (agar kerak bo'lsa)
     if len(orders) > 0:
         pag_kb = get_pagination_keyboard(offset, len(orders))
         if pag_kb.inline_keyboard:
@@ -187,7 +197,7 @@ async def handle_pending_request(message: Message):
 @dp.callback_query(F.data.startswith("pending_page_"))
 async def handle_pagination(callback: CallbackQuery):
     offset = int(callback.data.split("_")[-1])
-    await callback.message.delete() # Eski paginatsiya xabarini o'chirish
+    await callback.message.delete()  # Eski paginatsiya xabarini o'chirish
     await send_pending_orders(callback, callback.from_user.id, offset=offset)
     await callback.answer()
 
@@ -197,7 +207,7 @@ async def handle_pagination(callback: CallbackQuery):
 async def handle_list_couriers(callback: CallbackQuery, state: FSMContext):
     order_id = callback.data.split("_")[-1]
     couriers = await get_couriers_list(callback.from_user.id)
-    
+
     if not couriers:
         await callback.answer("Bo'sh kuryerlar yo'q.", show_alert=True)
         return
@@ -206,9 +216,9 @@ async def handle_list_couriers(callback: CallbackQuery, state: FSMContext):
     for c in couriers:
         btn_text = f"🛵 {c.get('name', 'Noma\'lum')} ({c.get('phone', '-')})"
         keyboard.append([InlineKeyboardButton(text=btn_text, callback_data=f"set_courier_{order_id}_{c['id']}")])
-    
+
     keyboard.append([InlineKeyboardButton(text="❌ Bekor qilish", callback_data="cancel_assign")])
-    
+
     await callback.message.edit_text(
         text=f"📦 <b>#{order_id}</b> uchun kuryer:",
         reply_markup=InlineKeyboardMarkup(inline_keyboard=keyboard),
@@ -219,9 +229,9 @@ async def handle_list_couriers(callback: CallbackQuery, state: FSMContext):
 async def handle_set_courier(callback: CallbackQuery):
     parts = callback.data.split("_")
     order_id, courier_id = parts[2], parts[3]
-    
+
     response = await assign_order_to_backend(order_id, courier_id, callback.from_user.id)
-    
+
     if response and response.status_code in [200, 201, 204]:
         await callback.message.edit_text(f"✅ Buyurtma #{order_id} kuryerga berildi!")
     else:

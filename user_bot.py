@@ -149,9 +149,8 @@ def format_price(price):
     except: return str(price)
 
 def location_to_str(location: types.Location) -> str:
-    # Google o'rniga Yandex Maps linkini qaytaramiz
+    # Yandex Maps linkini qaytaramiz
     return f"https://yandex.uz/maps/?text={location.latitude},{location.longitude}"
-
 
 def format_date(date_str):
     if not date_str: return "-"
@@ -191,7 +190,6 @@ def get_location_keyboard():
 def get_rating_keyboard(order_id):
     return InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text=f"{i} ⭐", callback_data=f"rate_{order_id}_{i}") for i in range(1, 6)]])
 
-# STATISTIKA KEYBOARD
 def get_stats_keyboard():
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -258,19 +256,16 @@ async def reg_phone(message: Message, state: FSMContext):
     phone = "+" + phone
     await state.update_data(phone=phone)
     await message.answer(
-        "📍 Endi manzilingizni kiriting.\n\nQo'lda yozishingiz yoki <b>Lokatsiya yuborish</b> tugmasini bosishingiz mumkin:", 
+        "📍 Endi manzilingizni kiriting.\n\n<b>FAQAT lokatsiya yuborish orqali!</b> Quyidagi tugmani bosing:", 
         parse_mode="HTML",
         reply_markup=get_location_keyboard()
     )
     await state.set_state(RegistrationStates.address)
 
-@dp.message(RegistrationStates.address, F.text | F.location)
+# 🟢 YANGILANGAN: faqat lokatsiya qabul qilinadi
+@dp.message(RegistrationStates.address, F.location)
 async def reg_address(message: Message, state: FSMContext):
-    if message.text == "❌ Bekor qilish":
-        await cancel_handler(message, state)
-        return
-
-    address = location_to_str(message.location) if message.location else message.text
+    address = location_to_str(message.location)
     data = await state.get_data()
     payload = {"name": data['name'], "phone": data['phone'], "address": address, "telegram_id": str(message.from_user.id)}
     
@@ -283,6 +278,11 @@ async def reg_address(message: Message, state: FSMContext):
         await state.clear()
     else:
         await message.answer("❌ Tizimda xatolik yuz berdi. Iltimos, /start buyrug'i orqali qayta urinib ko'ring.")
+
+# Agar lokatsiya o'rniga matn yuborilsa
+@dp.message(RegistrationStates.address)
+async def reg_address_invalid(message: Message, state: FSMContext):
+    await message.answer("⚠️ Iltimos, lokatsiyani tugma orqali yuboring! (📍 Lokatsiyani yuborish)", reply_markup=get_location_keyboard())
 
 # --- 2. 👤 PROFILIM ---
 @dp.message(F.text == "👤 Profilim")
@@ -340,7 +340,6 @@ async def edit_phone_start(c: CallbackQuery, state: FSMContext):
 async def save_new_phone(m: Message, state: FSMContext):
     if m.text == "❌ Bekor qilish": return await cancel_handler(m, state)
     p = m.contact.phone_number if m.contact else m.text
-    # Tozalash
     p = p.replace(" ", "").replace("+", "")
     if not p.isdigit(): return await m.answer("⚠️ Noto'g'ri format.")
     p = "+" + p
@@ -351,22 +350,25 @@ async def save_new_phone(m: Message, state: FSMContext):
         await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
 
-# Manzil
+# Manzil (faqat lokatsiya)
 @dp.callback_query(F.data == "edit_address")
 async def edit_address_start(c: CallbackQuery, state: FSMContext):
     await c.message.delete()
-    await c.message.answer("📍 Yangi manzilni yozing yoki lokatsiya yuboring:", reply_markup=get_location_keyboard())
+    await c.message.answer("📍 Yangi manzilni <b>faqat lokatsiya yuborish</b> orqali kiriting:", parse_mode="HTML", reply_markup=get_location_keyboard())
     await state.set_state(EditStates.editing_address)
 
-@dp.message(EditStates.editing_address)
+@dp.message(EditStates.editing_address, F.location)
 async def save_new_address(m: Message, state: FSMContext):
-    if m.text == "❌ Bekor qilish": return await cancel_handler(m, state)
-    a = location_to_str(m.location) if m.location else m.text
+    a = location_to_str(m.location)
     if await update_user_api(m.from_user.id, {"address": a}): 
         await m.answer("✅ Manzil yangilandi!", reply_markup=get_main_menu())
     else:
         await m.answer("❌ Xatolik yuz berdi.", reply_markup=get_main_menu())
     await state.clear()
+
+@dp.message(EditStates.editing_address)
+async def edit_address_invalid(m: Message, state: FSMContext):
+    await m.answer("⚠️ Iltimos, lokatsiyani tugma orqali yuboring!", reply_markup=get_location_keyboard())
 
 # --- 4. 🛍 YANGI BUYURTMA ---
 @dp.message(F.text == "🛍 Yangi buyurtma")
@@ -394,7 +396,6 @@ async def show_products(message: Message, products: list, state: FSMContext):
         return
     
     kb = []
-    # Mahsulotlar ro'yxatini chiroyli qilish (2 qatorli)
     row = []
     for p in available:
         btn = InlineKeyboardButton(text=f"{p['name']}", callback_data=f"product_{p['id']}")
@@ -404,7 +405,6 @@ async def show_products(message: Message, products: list, state: FSMContext):
             row = []
     if row: kb.append(row)
     
-    # Boshqaruv tugmalari
     controls = []
     if data.get('basket'):
         controls.append(InlineKeyboardButton(text=f"🛒 Savat ({len(data['basket'])})", callback_data="view_basket"))
@@ -459,7 +459,6 @@ async def quantity_entered(message: Message, state: FSMContext):
     prod = data['current_product']
     basket = data.get('basket', [])
     
-    # Savatga qo'shish
     basket.append({
         "product_id": prod['id'], 
         "product_name": prod['name'], 
@@ -521,7 +520,7 @@ async def clear_basket(c: CallbackQuery, state: FSMContext):
     await c.message.delete()
     await c.message.answer("🗑 Savat tozalandi.", reply_markup=get_main_menu())
 
-# --- MANZIL TANLASH (MANTIQ VA UX) ---
+# --- MANZIL TANLASH (faqat lokatsiya yoki profil manzili) ---
 @dp.callback_query(F.data == "confirm_basket")
 async def ask_address_type(c: CallbackQuery, state: FSMContext):
     await c.message.delete()
@@ -536,38 +535,36 @@ async def ask_address_type(c: CallbackQuery, state: FSMContext):
     
     await c.message.answer(
         "📍 <b>Buyurtmani qayerga yetkazib beraylik?</b>\n\n"
-        "Profilimgizdagi manzilni tanlashingiz yoki yangi manzil (lokatsiya) yuborishingiz mumkin.", 
+        "Profilimgizdagi manzilni tanlashingiz yoki <b>faqat lokatsiya yuborish</b> orqali yangi manzil berishingiz mumkin.\n"
+        "Matn yozish qabul qilinmaydi.", 
         parse_mode="HTML", 
         reply_markup=kb
     )
     await state.set_state(OrderStates.choosing_address_type)
 
-@dp.message(OrderStates.choosing_address_type)
+@dp.message(OrderStates.choosing_address_type, F.location | F.text)
 async def handle_address_choice(message: Message, state: FSMContext):
     if message.text == "❌ Bekor qilish":
         await cancel_handler(message, state)
         return
 
-    # 1. Eski manzil
+    # 1. Profil manzili (matn)
     if message.text == "🏠 Profilimdagi manzilga":
         await state.update_data(custom_location=None)
         await message.answer("✅ Tushunarli, profilingizdagi manzilga yetkazamiz.")
     
-    # 2. Lokatsiya
+    # 2. Yangi lokatsiya
     elif message.location:
         loc_str = location_to_str(message.location)
         await state.update_data(custom_location=loc_str)
         await message.answer("✅ Yangi lokatsiya qabul qilindi.")
         
-    # 3. Matnli manzil (agar yozsa)
-    elif message.text:
-        await state.update_data(custom_location=message.text)
-        await message.answer(f"✅ Yangi manzil qabul qilindi.")
-        
+    # 3. Boshqa matnlar rad etiladi
     else:
-        await message.answer("⚠️ Iltimos, manzilni tanlang yoki yuboring.")
+        await message.answer("⚠️ Iltimos, faqat quyidagi tugmalardan foydalaning: profil manzili yoki lokatsiya yuborish.")
         return
 
+    # Vaqtni so'rash
     await message.answer(
         "🕒 <b>Qachon yetkazib beraylik?</b>\n"
         "Masalan: 'Tezroq', 'Soat 18:00 da', 'Ertaga ertalab'.\n\n"

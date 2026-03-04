@@ -1,7 +1,7 @@
 import os
 import asyncio
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List, Any, Tuple
+from typing import Optional, Dict, List, Any, Tuple, Set
 from aiogram import Bot, Dispatcher, Router, F, types
 from aiogram.filters import Command, CommandStart
 from aiogram.utils.markdown import html_decoration as hd
@@ -47,6 +47,15 @@ class CourierStates(StatesGroup):
     waiting_for_delivery_time = State()
     waiting_for_new_price = State()
     waiting_for_bonus_product = State()
+
+# ============================================================================
+# POLLING UCHUN GLOBAL O'ZGARUVCHILAR
+# ============================================================================
+
+# Start bosgan faol kuryerlar (telegram_id)
+active_couriers: Set[int] = set()
+# Har bir kuryer uchun oxirgi ko'rilgan buyurtma ID lari
+last_orders: Dict[int, Set[int]] = {}
 
 # ============================================================================
 # API CLIENT
@@ -542,6 +551,55 @@ def format_rating_info(report_data: Dict) -> str:
         return f"⭐ {hd.bold('MENING REYTINGIM')}\n\nMa'lumotlar yuklanmadi."
 
 # ============================================================================
+# POLLING FUNKSIYALARI (YANGI BUYURTMA BILDIREM)
+# ============================================================================
+
+async def check_new_orders_for_courier(courier_id: int):
+    """Berilgan kuryer uchun yangi buyurtmalarni tekshiradi va xabar yuboradi"""
+    global last_orders
+
+    success, orders = await client.get_courier_orders(str(courier_id))
+    if not success or not orders:
+        return
+
+    # Hozirgi buyurtma ID lari
+    current_ids = {o['id'] for o in orders}
+
+    # Avvalgi ID lar
+    old_ids = last_orders.get(courier_id, set())
+
+    # Yangi ID lar
+    new_ids = current_ids - old_ids
+
+    if new_ids:
+        # Avvalgi ro'yxatni yangilaymiz
+        last_orders[courier_id] = current_ids
+
+        # Har bir yangi buyurtma uchun xabar yuboramiz
+        for o in orders:
+            if o['id'] in new_ids:
+                order_text = format_order_detail(o)
+                status = o.get('status', '')
+                is_price_locked = o.get('is_price_locked', False)
+                keyboard = get_order_actions_keyboard(o['id'], status, is_price_locked)
+                # Sarlavha qo'shamiz
+                msg = f"🆕 <b>YANGI BUYURTMA BIRIKTIRILDI!</b>\n\n{order_text}"
+                await bot.send_message(courier_id, msg, parse_mode="HTML", reply_markup=keyboard)
+    else:
+        # Agar o'zgarish bo'lmasa, faqat ro'yxatni saqlaymiz
+        last_orders[courier_id] = current_ids
+
+async def polling_task():
+    """Har 30 soniyada barcha faol kuryerlarni tekshiradi"""
+    while True:
+        try:
+            for courier_id in list(active_couriers):
+                await check_new_orders_for_courier(courier_id)
+        except Exception as e:
+            logger.error(f"Polling xatosi: {e}")
+        await asyncio.sleep(30)  # 30 soniya kutish
+
+# ============================================================================
 # ROUTER VA HANDLERLAR
 # ============================================================================
 
@@ -553,12 +611,22 @@ client = CourierClient(API_BASE_URL)
 @courier_router.message(CommandStart())
 async def cmd_start(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
+    int_id = message.from_user.id
 
     try:
         check_success, check_data = await client.check_courier_exists(user_id)
 
         if check_success:
             if check_data.get('exists'):
+                # Kuryerni faollar ro'yxatiga qo'shamiz
+                active_couriers.add(int_id)
+                # Avvalgi buyurtmalarni yuklab, last_orders ni to'ldiramiz
+                success, orders = await client.get_courier_orders(user_id)
+                if success and orders:
+                    last_orders[int_id] = {o['id'] for o in orders}
+                else:
+                    last_orders[int_id] = set()
+
                 welcome_message = format_courier_welcome(check_data)
                 await message.answer(welcome_message, parse_mode="HTML", reply_markup=get_main_keyboard())
                 await state.set_state(CourierStates.main_menu)
@@ -1279,12 +1347,21 @@ async def handle_my_rating(message: types.Message):
 @courier_router.message(F.text == "🔄 Yangilash")
 async def handle_refresh(message: types.Message, state: FSMContext):
     user_id = str(message.from_user.id)
+    int_id = message.from_user.id
 
     check_success, check_data = await client.check_courier_exists(user_id)
 
     if check_success:
         if check_data.get('exists'):
             await state.update_data(courier_info=check_data)
+            # Kuryerni faollar ro'yxatiga qo'shamiz (agar yo'q bo'lsa)
+            active_couriers.add(int_id)
+            # Avvalgi buyurtmalarni yuklab, last_orders ni yangilaymiz
+            success, orders = await client.get_courier_orders(user_id)
+            if success and orders:
+                last_orders[int_id] = {o['id'] for o in orders}
+            else:
+                last_orders[int_id] = set()
             await message.answer("✅ Ma'lumotlar yangilandi.", parse_mode="HTML", reply_markup=get_main_keyboard())
         else:
             await message.answer("❌ Kuryerlar ro'yxatida yo'qsiz.", parse_mode="HTML")
@@ -1302,6 +1379,7 @@ async def handle_back(message: types.Message, state: FSMContext):
 # ============================================================================
 
 async def main():
+    global bot
     if not BOT_TOKEN:
         logger.error("❌ BOT_TOKEN topilmadi!")
         return
@@ -1315,6 +1393,9 @@ async def main():
         dp = Dispatcher(storage=storage)
 
         dp.include_router(courier_router)
+
+        # Polling taskni ishga tushiramiz
+        asyncio.create_task(polling_task())
 
         logger.info("✅ Bot muvaffaqiyatli yaratildi")
         await dp.start_polling(bot, skip_updates=True)

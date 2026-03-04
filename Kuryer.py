@@ -1142,39 +1142,51 @@ async def handle_back_to_order(callback_query: types.CallbackQuery):
     else:
         await callback_query.message.edit_text("❌ Xatolik yuz berdi.", parse_mode="HTML")
 
-# ============ BATAFSIL BUYURTMA MA'LUMOTLARI ============
+# ============ BATAFSIL BUYURTMA MA'LUMOTLARI (o'zgartirilgan) ============
 
 @courier_router.callback_query(F.data.startswith("detail_order_"))
 async def handle_detail_order(callback_query: types.CallbackQuery):
     order_id = int(callback_query.data.replace("detail_order_", ""))
 
     await callback_query.answer()
-    await callback_query.message.answer(f"⏳ Buyurtma #{order_id} ma'lumotlari yuklanmoqda...")
+
+    # Avval xabarni "yuklanmoqda" deb o'zgartiramiz
+    await callback_query.message.edit_text(
+        f"⏳ {hd.bold('Buyurtma #{order_id} ma\'lumotlari yuklanmoqda...')}",
+        parse_mode="HTML"
+    )
 
     success, order_detail = await client.get_order_detail(order_id)
 
-    if success:
-        order_text = format_order_detail(order_detail)
+    if not success:
+        await callback_query.message.edit_text(
+            "❌ Buyurtma ma'lumotlari olinmadi.",
+            parse_mode="HTML"
+        )
+        return
 
-        user_telegram_id = order_detail.get('user_telegram_id')
-        if user_telegram_id:
-            end_date = datetime.now().strftime('%Y-%m-%d')
-            start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+    order_text = format_order_detail(order_detail)
 
-            stats_success, stats_data = await client.get_user_order_stats(user_telegram_id, start_date, end_date)
+    # Mijozning Telegram ID si orqali statistika olish
+    user_telegram_id = order_detail.get('user_telegram_id')
+    if user_telegram_id:
+        end_date = datetime.now().strftime('%Y-%m-%d')
+        start_date = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+        stats_success, stats_data = await client.get_user_order_stats(user_telegram_id, start_date, end_date)
+        if stats_success:
+            stats_text = format_user_stats(stats_data)
+            order_text += stats_text
 
-            if stats_success:
-                stats_text = format_user_stats(stats_data)
-                order_text += stats_text
+    status = order_detail.get('status', '')
+    is_price_locked = order_detail.get('is_price_locked', False)
+    keyboard = get_order_actions_keyboard(order_id, status, is_price_locked)
 
-        status = order_detail.get('status', '')
-        is_price_locked = order_detail.get('is_price_locked', False)
-        keyboard = get_order_actions_keyboard(order_id, status, is_price_locked)
-
-        await callback_query.message.answer(order_text, parse_mode="HTML", reply_markup=keyboard)
-    else:
-        error_details = order_detail.get('error', 'Noma\'lum xato') if isinstance(order_detail, dict) else str(order_detail)
-        await callback_query.message.answer(f"❌ Xato: {error_details}", parse_mode="HTML")
+    # Xuddi shu xabarni tahrirlaymiz
+    await callback_query.message.edit_text(
+        order_text,
+        parse_mode="HTML",
+        reply_markup=keyboard
+    )
 
 # ============ QOLGAN HANDLERLAR ============
 

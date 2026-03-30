@@ -1401,7 +1401,7 @@ if __name__ == "__main__":
 
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
+    except KeyboardInterrupt: 
         logger.info("👋 Bot to'xtatildi")
     except Exception as e:
         logger.error(f"❌ Xatolik: {e}")
